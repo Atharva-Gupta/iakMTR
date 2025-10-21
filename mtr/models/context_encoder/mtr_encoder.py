@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 
@@ -81,7 +81,7 @@ class MTREncoder(nn.Module):
         x_t = x.permute(1, 0, 2)
         x_mask_t = x_mask.permute(1, 0, 2)
         x_pos_t = x_pos.permute(1, 0, 2)
- 
+
         pos_embedding = position_encoding_utils.gen_sineembed_for_position(x_pos_t, hidden_dim=d_model)
 
         for k in range(len(self.self_attn_layers)):
@@ -105,14 +105,15 @@ class MTREncoder(nn.Module):
         batch_size, N, d_model = x.shape
 
         x_stack_full = x.view(-1, d_model)  # (batch_size * N, d_model)
-        x_mask_stack = x_mask.view(-1)
-        x_pos_stack_full = x_pos.view(-1, 3)
+        x_mask_stack = x_mask.view(-1)      # (batch_size * N)
+        x_pos_stack_full = x_pos.view(-1, 3)  # (batch_size * N, 3)
+
         batch_idxs_full = torch.arange(batch_size).type_as(x)[:, None].repeat(1, N).view(-1).int()  # (batch_size * N)
 
         # filter invalid elements
-        x_stack = x_stack_full[x_mask_stack]
-        x_pos_stack = x_pos_stack_full[x_mask_stack]
-        batch_idxs = batch_idxs_full[x_mask_stack]
+        x_stack = x_stack_full[x_mask_stack]          # (batch_size * N, d_model)
+        x_pos_stack = x_pos_stack_full[x_mask_stack]  # (batch_size * N, 3)
+        batch_idxs = batch_idxs_full[x_mask_stack]    # (batch_size * N)
 
         # knn
         batch_offsets = common_utils.get_batch_offsets(batch_idxs=batch_idxs, bs=batch_size).int()  # (batch_size + 1)
@@ -150,11 +151,11 @@ class MTREncoder(nn.Module):
               input_dict:
         """
         input_dict = batch_dict['input_dict']
-        obj_trajs, obj_trajs_mask = input_dict['obj_trajs'].cuda(), input_dict['obj_trajs_mask'].cuda() 
-        map_polylines, map_polylines_mask = input_dict['map_polylines'].cuda(), input_dict['map_polylines_mask'].cuda() 
+        obj_trajs, obj_trajs_mask = input_dict['obj_trajs'].cuda(), input_dict['obj_trajs_mask'].cuda()
+        map_polylines, map_polylines_mask = input_dict['map_polylines'].cuda(), input_dict['map_polylines_mask'].cuda()
 
-        obj_trajs_last_pos = input_dict['obj_trajs_last_pos'].cuda() 
-        map_polylines_center = input_dict['map_polylines_center'].cuda() 
+        obj_trajs_last_pos = input_dict['obj_trajs_last_pos'].cuda()
+        map_polylines_center = input_dict['map_polylines_center'].cuda()
         track_index_to_predict = input_dict['track_index_to_predict']
 
         assert obj_trajs_mask.dtype == torch.bool and map_polylines_mask.dtype == torch.bool
@@ -171,9 +172,9 @@ class MTREncoder(nn.Module):
         obj_valid_mask = (obj_trajs_mask.sum(dim=-1) > 0)  # (num_center_objects, num_objects)
         map_valid_mask = (map_polylines_mask.sum(dim=-1) > 0)  # (num_center_objects, num_polylines)
 
-        global_token_feature = torch.cat((obj_polylines_feature, map_polylines_feature), dim=1) 
-        global_token_mask = torch.cat((obj_valid_mask, map_valid_mask), dim=1) 
-        global_token_pos = torch.cat((obj_trajs_last_pos, map_polylines_center), dim=1) 
+        global_token_feature = torch.cat((obj_polylines_feature, map_polylines_feature), dim=1)
+        global_token_mask = torch.cat((obj_valid_mask, map_valid_mask), dim=1)
+        global_token_pos = torch.cat((obj_trajs_last_pos, map_polylines_center), dim=1)
 
         if self.use_local_attn:
             global_token_feature = self.apply_local_attn(
