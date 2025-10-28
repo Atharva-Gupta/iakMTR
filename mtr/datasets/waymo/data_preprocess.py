@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 
@@ -14,7 +14,7 @@ from tqdm import tqdm
 from waymo_open_dataset.protos import scenario_pb2
 from waymo_types import object_type, lane_type, road_line_type, road_edge_type, signal_state, polyline_type
 
-    
+
 def decode_tracks_from_proto(tracks):
     track_infos = {
         'object_id': [],  # {0: unset, 1: vehicle, 2: pedestrian, 3: cyclist, 4: others}
@@ -129,10 +129,10 @@ def decode_map_features_from_proto(map_features):
             cur_polyline = np.concatenate((cur_polyline[:, 0:3], cur_polyline_dir, cur_polyline[:, 3:]), axis=-1)
 
             map_infos['speed_bump'].append(cur_info)
-
         else:
             print(cur_data)
             raise ValueError
+            # pass
 
         polylines.append(cur_polyline)
         cur_info['polyline_index'] = (point_cnt, point_cnt + len(cur_polyline))
@@ -220,6 +220,8 @@ def get_infos_from_protos(data_path, output_path=None, num_workers=8):
     src_files = glob.glob(os.path.join(data_path, '*.tfrecord*'))
     src_files.sort()
 
+    print(src_files)
+
     # func(src_files[0])
     with multiprocessing.Pool(num_workers) as p:
         data_infos = list(tqdm(p.imap(func, src_files), total=len(src_files)))
@@ -248,7 +250,7 @@ def create_infos_from_protos(raw_data_path, output_path, num_workers=16):
     with open(val_filename, 'wb') as f:
         pickle.dump(val_infos, f)
     print('----------------Waymo info val file is saved to %s----------------' % val_filename)
-    
+
 
 if __name__ == '__main__':
     create_infos_from_protos(

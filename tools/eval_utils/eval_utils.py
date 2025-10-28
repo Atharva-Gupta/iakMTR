@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 import pickle
@@ -11,7 +11,8 @@ import torch
 import tqdm
 
 from mtr.utils import common_utils
-
+# import mtr.utils.dist_utils as dist
+import torch.distributed as dist
 
 def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None, logger_iter_interval=50):
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -60,10 +61,24 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     if cfg.LOCAL_RANK == 0:
         progress_bar.close()
 
+    # if dist_test:
+    #     logger.info(f'Total number of samples before merging from multiple GPUs: {len(pred_dicts)}')
+    #     pred_dicts = common_utils.merge_results_dist(pred_dicts, len(dataset), tmpdir=result_dir / 'tmpdir')
+    #     logger.info(f'Total number of samples after merging from multiple GPUs (removing duplicate): {len(pred_dicts)}')
+
     if dist_test:
-        logger.info(f'Total number of samples before merging from multiple GPUs: {len(pred_dicts)}')
+        # This first log might still be useful to see how many samples each GPU processed
+        # Note: It might crash if pred_dicts can be None *before* the merge on some ranks,
+        # you might need to add a check here too if that happens.
+        if pred_dicts is not None:
+             logger.info(f'Total number of samples on this GPU before merging: {len(pred_dicts)}')
+
+        # Merge results from all GPUs
         pred_dicts = common_utils.merge_results_dist(pred_dicts, len(dataset), tmpdir=result_dir / 'tmpdir')
-        logger.info(f'Total number of samples after merging from multiple GPUs (removing duplicate): {len(pred_dicts)}')
+
+        # --- Only Rank 0 should log the final length and do the final evaluation ---
+        if dist.get_rank() == 0:
+            logger.info(f'Total number of samples after merging from multiple GPUs (removing duplicate): {len(pred_dicts)}')
 
     logger.info('*************** Performance of EPOCH %s *****************' % epoch_id)
     sec_per_example = (time.time() - start_time) / len(dataloader.dataset)
@@ -79,7 +94,7 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
 
     result_str, result_dict = dataset.evaluation(
         pred_dicts,
-        output_path=final_output_dir, 
+        output_path=final_output_dir,
     )
 
     logger.info(result_str)
