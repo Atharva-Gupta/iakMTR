@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 
@@ -70,7 +70,10 @@ polyline_type = {
     'TYPE_CROSSWALK': 18,
 
     # for speed bump
-    'TYPE_SPEED_BUMP': 19
+    'TYPE_SPEED_BUMP': 19,
+
+    # for drive way
+    'TYPE_DRIVEWAY': 20
 }
 
 

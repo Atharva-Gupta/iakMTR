@@ -49,7 +49,8 @@ def decode_map_features_from_proto(map_features):
         'road_edge': [],
         'stop_sign': [],
         'crosswalk': [],
-        'speed_bump': []
+        'speed_bump': [],
+        'driveway': [],
     }
     polylines = []
 
@@ -68,7 +69,7 @@ def decode_map_features_from_proto(map_features):
             cur_info['left_boundary'] = [{
                     'start_index': x.lane_start_index, 'end_index': x.lane_end_index,
                     'feature_id': x.boundary_feature_id,
-                    'boundary_type': x.boundary_type  # roadline type
+                    'boundary_type': road_line_type[x.boundary_type]  # roadline type
                 } for x in cur_data.lane.left_boundaries
             ]
             cur_info['right_boundary'] = [{
@@ -129,10 +130,16 @@ def decode_map_features_from_proto(map_features):
             cur_polyline = np.concatenate((cur_polyline[:, 0:3], cur_polyline_dir, cur_polyline[:, 3:]), axis=-1)
 
             map_infos['speed_bump'].append(cur_info)
+        elif cur_data.driveway.ByteSize() > 0:
+            global_type = polyline_type['TYPE_DRIVEWAY']
+            cur_polyline = np.stack([np.array([point.x, point.y, point.z, global_type]) for point in cur_data.driveway.polygon], axis=0)
+            cur_polyline_dir = get_polyline_dir(cur_polyline[:, 0:3])
+            cur_polyline = np.concatenate((cur_polyline[:, 0:3], cur_polyline_dir, cur_polyline[:, 3:]), axis=-1)
+
+            map_infos['driveway'].append(cur_info)
         else:
-            print(cur_data)
+            print(cur_data, dir(cur_data))
             raise ValueError
-            # pass
 
         polylines.append(cur_polyline)
         cur_info['polyline_index'] = (point_cnt, point_cnt + len(cur_polyline))
