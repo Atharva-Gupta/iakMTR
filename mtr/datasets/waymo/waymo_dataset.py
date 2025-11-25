@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 
@@ -26,13 +26,22 @@ class WaymoDataset(DatasetTemplate):
 
     def get_all_infos(self, info_path):
         self.logger.info(f'Start to load infos from {info_path}')
+        if not os.path.exists(info_path):
+            self.logger.error(f"Info file not found: {info_path}")
+            raise RuntimeError(f"Info file not found: {info_path}")
+
         with open(info_path, 'rb') as f:
             src_infos = pickle.load(f)
+
+        if not src_infos:
+            self.logger.warning(f"The info file is empty: {info_path}")
+            return []
 
         infos = src_infos[::self.dataset_cfg.SAMPLE_INTERVAL[self.mode]]
         self.logger.info(f'Total scenes before filters: {len(infos)}')
 
         for func_name, val in self.dataset_cfg.INFO_FILTER_DICT.items():
+            self.logger.info(f'Filtering with {func_name} and value {val}...')
             infos = getattr(self, func_name)(infos, val)
 
         return infos
@@ -306,11 +315,11 @@ class WaymoDataset(DatasetTemplate):
         acce[:, :, 0, :] = acce[:, :, 1, :]
 
         ret_obj_trajs = torch.cat((
-            obj_trajs[:, :, :, 0:6], 
+            obj_trajs[:, :, :, 0:6],
             object_onehot_mask,
-            object_time_embedding, 
+            object_time_embedding,
             object_heading_embedding,
-            obj_trajs[:, :, :, 7:9], 
+            obj_trajs[:, :, :, 7:9],
             acce,
         ), dim=-1)
 
@@ -547,6 +556,3 @@ if __name__ == '__main__':
     except:
         yaml_config = yaml.safe_load(open(args.cfg_file))
     dataset_cfg = EasyDict(yaml_config)
-
-
-

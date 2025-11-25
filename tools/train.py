@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 import _init_path
@@ -40,6 +40,7 @@ def parse_config():
     parser.add_argument('--fix_random_seed', action='store_true', default=False, help='')
     parser.add_argument('--ckpt_save_interval', type=int, default=2, help='number of training epochs')
     parser.add_argument('--local_rank', type=int, default=None, help='local rank for distributed training')
+    parser.add_argument('--local-rank', type=int, default=None, help='local rank for distributed training')
     parser.add_argument('--max_ckpt_save_num', type=int, default=5, help='max number of saved checkpoint')
     parser.add_argument('--merge_all_iters_to_one_epoch', action='store_true', default=False, help='')
     parser.add_argument('--set', dest='set_cfgs', default=None, nargs=argparse.REMAINDER,
@@ -124,6 +125,7 @@ def main():
     if args.batch_size is None:
         args.batch_size = cfg.OPTIMIZATION.BATCH_SIZE_PER_GPU
     else:
+        print(args.batch_size, total_gpus)
         assert args.batch_size % total_gpus == 0, 'Batch size should match the number of gpus'
         args.batch_size = args.batch_size // total_gpus
 
