@@ -28,7 +28,7 @@ class MTREncoder(nn.Module):
             out_channels=self.model_cfg.D_MODEL
         )
         self.map_polyline_encoder = self.build_polyline_encoder(
-            in_channels=self.model_cfg.NUM_INPUT_ATTR_MAP,
+            in_channels=self.model_cfg.NUM_INPUT_ATTR_MAP + 1,
             hidden_dim=self.model_cfg.NUM_CHANNEL_IN_MLP_MAP,
             num_layers=self.model_cfg.NUM_LAYER_IN_MLP_MAP,
             num_pre_layers=self.model_cfg.NUM_LAYER_IN_PRE_MLP_MAP,
@@ -107,6 +107,7 @@ class MTREncoder(nn.Module):
         x_stack_full = x.view(-1, d_model)  # (batch_size * N, d_model)
         x_mask_stack = x_mask.view(-1)      # (batch_size * N)
         x_pos_stack_full = x_pos.view(-1, 3)  # (batch_size * N, 3)
+        # x_heading_stack = x_heading.view(-1)  # (batch_size * N)
 
         batch_idxs_full = torch.arange(batch_size).type_as(x)[:, None].repeat(1, N).view(-1).int()  # (batch_size * N)
 
@@ -114,6 +115,7 @@ class MTREncoder(nn.Module):
         x_stack = x_stack_full[x_mask_stack]          # (batch_size * N, d_model)
         x_pos_stack = x_pos_stack_full[x_mask_stack]  # (batch_size * N, 3)
         batch_idxs = batch_idxs_full[x_mask_stack]    # (batch_size * N)
+        # x_heading_stack = x_heading_stack[x_mask_stack]  # (batch_size * N)
 
         # knn
         batch_offsets = common_utils.get_batch_offsets(batch_idxs=batch_idxs, bs=batch_size).int()  # (batch_size + 1)
@@ -156,17 +158,39 @@ class MTREncoder(nn.Module):
 
         obj_trajs_last_pos = input_dict['obj_trajs_last_pos'].cuda()
         map_polylines_center = input_dict['map_polylines_center'].cuda()
-        track_index_to_predict = input_dict['track_index_to_predict']
+        target_agent_indices = input_dict['track_index_to_predict'] # (B,)
 
         assert obj_trajs_mask.dtype == torch.bool and map_polylines_mask.dtype == torch.bool
 
-        num_center_objects, num_objects, num_timestamps, _ = obj_trajs.shape
+        batch_size, num_objects, num_timestamps, _ = obj_trajs.shape
         num_polylines = map_polylines.shape[1]
 
+        obj_trajs_pos = obj_trajs[:, :, :, 0:2] # (B, num_objects, num_timestamps, 2)
+        obj_trajs_feats = obj_trajs[:, :, :, 2:] # (B, num_objects, num_timestamps, _ - 2)
+        map_polylines_pos = map_polylines[:, :, :, 0:2] # (B, num_polylines, num_points, 2)
+        map_polylines_feats = map_polylines[:, :, :, 2:] # (B, num_polylines, num_points, _ - 2)
+
+        obj_trajs_centered = obj_trajs_pos - obj_trajs_last_pos[:, :, None, 0:2] # (B, num_objects, num_timestamps, 2)
+        map_polylines_centered = map_polylines_pos - map_polylines_center[:, :, None, 0:2] # (B, num_polylines, num_points, 2)
+
+        obj_heading = obj_trajs_last_pos[:, :, 2] # (B, num_objects)
+        map_heading = map_polylines_center[:, :, 2] # (B, num_polylines)
+
+        cos_o, sin_o = torch.cos(obj_heading), torch.sin(obj_heading) # each are (B, num_objects)
+        cos_m, sin_m = torch.cos(map_heading), torch.sin(map_heading) # each are (B, num_polylines)
+        obj_rot_mat = torch.stack([torch.stack([cos_o, sin_o], dim=-1), torch.stack([-sin_o, cos_o], dim=-1)], dim=-2) # (B, num_objects, 2, 2)
+        map_rot_mat = torch.stack([torch.stack([cos_m, sin_m], dim=-1), torch.stack([-sin_m, cos_m], dim=-1)], dim=-2) # (B, num_polylines, 2, 2)
+
+        obj_trajs_rotated = torch.matmul(obj_rot_mat.unsqueeze(2), obj_trajs_centered.unsqueeze(-1)).squeeze(-1) # (B, num_objects, 1, 2, 2) @ (B, num_objects, num_timestamps, 2, 1) = (B, num_objects, num_timestamps, 2, 1).squeeze(-1) = (B, num_objects, num_timestamps, 2)
+        map_polylines_rotated = torch.matmul(map_rot_mat.unsqueeze(2), map_polylines_centered.unsqueeze(-1)).squeeze(-1) # (B, num_polylines, 1, 2, 2) @ (B, num_polylines, num_points, 2, 1) = (B, num_polylines, num_points, 2, 1).squeeze(-1) = (B, num_polylines, num_points, 2)
+
+        obj_vel = obj_trajs_feats[:, :, :, 0:2]
+        obj_vel_rotated = torch.matmul(obj_rot_mat.unsqueeze(2), obj_vel.unsqueeze(-1)).squeeze(-1)
+        obj_trajs_feats_corrected = torch.cat([obj_vel_rotated, obj_trajs_feats[:, :, :, 2:]], dim=-1)
+
         # apply polyline encoder
-        obj_trajs_in = torch.cat((obj_trajs, obj_trajs_mask[:, :, :, None].type_as(obj_trajs)), dim=-1)
-        obj_polylines_feature = self.agent_polyline_encoder(obj_trajs_in, obj_trajs_mask)  # (num_center_objects, num_objects, C)
-        map_polylines_feature = self.map_polyline_encoder(map_polylines, map_polylines_mask)  # (num_center_objects, num_polylines, C)
+        obj_polylines_feature = self.agent_polyline_encoder(torch.cat([obj_trajs_rotated, obj_trajs_feats_corrected, obj_trajs_mask.unsqueeze(-1).type_as(obj_trajs)], dim=-1), obj_trajs_mask) #
+        map_polylines_feature = self.map_polyline_encoder(torch.cat([map_polylines_rotated, map_polylines_feats, map_polylines_mask.unsqueeze(-1).type_as(map_polylines)], dim=-1), map_polylines_mask) #
 
         # apply self-attn
         obj_valid_mask = (obj_trajs_mask.sum(dim=-1) > 0)  # (num_center_objects, num_objects)
@@ -191,7 +215,7 @@ class MTREncoder(nn.Module):
         assert map_polylines_feature.shape[1] == num_polylines
 
         # organize return features
-        center_objects_feature = obj_polylines_feature[torch.arange(num_center_objects), track_index_to_predict]
+        center_objects_feature = obj_polylines_feature[torch.arange(batch_size), target_agent_indices]
 
         batch_dict['center_objects_feature'] = center_objects_feature
         batch_dict['obj_feature'] = obj_polylines_feature
