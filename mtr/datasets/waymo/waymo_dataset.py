@@ -21,6 +21,9 @@ class WaymoDataset(DatasetTemplate):
         self.data_root = cfg.ROOT_DIR / self.dataset_cfg.DATA_ROOT
         self.data_path = self.data_root / self.dataset_cfg.SPLIT_DIR[self.mode]
 
+        self.logger.info(f"fetching data from: {(self.data_root / self.dataset_cfg.INFO_FILE[self.mode]).resolve()}")
+        self.logger.info(f"currently in mode {self.mode} and fetching {self.dataset_cfg.INFO_FILE[self.mode]}")
+
         self.infos = self.get_all_infos(self.data_root / self.dataset_cfg.INFO_FILE[self.mode])
         self.logger.info(f'Total scenes after filters: {len(self.infos)}')
 
@@ -93,17 +96,29 @@ class WaymoDataset(DatasetTemplate):
 
         sdc_track_index = info['sdc_track_index']
         current_time_index = info['current_time_index']
+
+        assert current_time_index == 10
+
+        # pretty much [0, 0.1, ... 1.0] bc of 10 Hz sampling
         timestamps = np.array(info['timestamps_seconds'][:current_time_index + 1], dtype=np.float32)
 
         track_infos = info['track_infos']
 
         track_index_to_predict = np.array(info['tracks_to_predict']['track_index'])
+
+        # basically tracks_to_predict contains track_index, which are the indices of
+        # track_infos which are important. These are not global agent ids, but rather
+        # indices into track_infos
+        # self.logger.info(f"trying to see what track_infos looks like: {track_infos} \n\n----------\n\n versus track_index_to_predict: {info['tracks_to_predict']}")
+
         obj_types = np.array(track_infos['object_type'])
         obj_ids = np.array(track_infos['object_id'])
         obj_trajs_full = track_infos['trajs']  # (num_objects, num_timestamp, 10)
         obj_trajs_past = obj_trajs_full[:, :current_time_index + 1]
         obj_trajs_future = obj_trajs_full[:, current_time_index + 1:]
 
+        # center objects contains all of the state info for valid and interesting (to be predicted) agents
+        # at the current timestep
         center_objects, track_index_to_predict = self.get_interested_agents(
             track_index_to_predict=track_index_to_predict,
             obj_trajs_full=obj_trajs_full,
@@ -161,6 +176,8 @@ class WaymoDataset(DatasetTemplate):
             self, center_objects, obj_trajs_past, obj_trajs_future, track_index_to_predict, sdc_track_index, timestamps,
             obj_types, obj_ids
         ):
+        # obj_trajs_data: (num_center_objects, num_objects, num_timesteps, num_attrs <- 10)
+        # obj_trajs_future_state: (num_center_objects, num_objects, num_timestamps_future, num_attrs <- 4)
         obj_trajs_data, obj_trajs_mask, obj_trajs_future_state, obj_trajs_future_mask = self.generate_centered_trajs_for_agents(
             center_objects=center_objects, obj_trajs_past=obj_trajs_past,
             obj_types=obj_types, center_indices=track_index_to_predict,
@@ -168,6 +185,7 @@ class WaymoDataset(DatasetTemplate):
         )
 
         # generate the labels of track_objects for training
+        # obj_trajs_future_state 
         center_obj_idxs = np.arange(len(track_index_to_predict))
         center_gt_trajs = obj_trajs_future_state[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps, 4)
         center_gt_trajs_mask = obj_trajs_future_mask[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps)
@@ -210,10 +228,21 @@ class WaymoDataset(DatasetTemplate):
             track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids)
 
     def get_interested_agents(self, track_index_to_predict, obj_trajs_full, current_time_index, obj_types, scene_id):
+        """
+        Args:
+            track_index_to_predict (num_interesting_agents):
+            obj_trajs_full (num_objects, num_timestamps, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
+            current_time_index (1,):
+            obj_types (num_objects):
+            scene_id:
+        Returns:
+            center_objects_list (num_center_objects, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
+            track_index_to_predict_selected (num_center_objects): same length as track_index_to_predict; otherwise function will have thrown an error
+        """
         center_objects_list = []
         track_index_to_predict_selected = []
 
-        for k in range(len(track_index_to_predict)):
+        for k in range(len(track_index_to_predict)): # number of interesting agents
             obj_idx = track_index_to_predict[k]
 
             assert obj_trajs_full[obj_idx, current_time_index, -1] > 0, f'obj_idx={obj_idx}, scene_id={scene_id}'
@@ -234,24 +263,32 @@ class WaymoDataset(DatasetTemplate):
             center_xyz (num_center_objects, 3 or 2): [x, y, z] or [x, y]
             center_heading (num_center_objects):
             heading_index: the index of heading angle in the num_attr-axis of obj_trajs
+
+        Returns:
+            obj_trajs (num_center_objects, num_objects, num_timestamps, num_attrs)
         """
         num_objects, num_timestamps, num_attrs = obj_trajs.shape
         num_center_objects = center_xyz.shape[0]
         assert center_xyz.shape[0] == center_heading.shape[0]
         assert center_xyz.shape[1] in [3, 2]
 
+        # (num_center_objects, num_objects, num_timestamps, num_attrs)
         obj_trajs = obj_trajs.clone().view(1, num_objects, num_timestamps, num_attrs).repeat(num_center_objects, 1, 1, 1)
-        obj_trajs[:, :, :, 0:center_xyz.shape[1]] -= center_xyz[:, None, None, :]
+        obj_trajs[:, :, :, 0:center_xyz.shape[1]] -= center_xyz[:, None, None, :] # centering
         obj_trajs[:, :, :, 0:2] = common_utils.rotate_points_along_z(
-            points=obj_trajs[:, :, :, 0:2].view(num_center_objects, -1, 2),
-            angle=-center_heading
+            points=obj_trajs[:, :, :, 0:2].view(num_center_objects, -1, 2), # (num_center_objects, num_objects * num_timestamps, 2)
+            angle=-center_heading # (num_center_objects)
         ).view(num_center_objects, num_objects, num_timestamps, 2)
 
         obj_trajs[:, :, :, heading_index] -= center_heading[:, None, None]
 
-        # rotate direction of velocity
+        assert torch.abs(obj_trajs[:, :, :, heading_index]).max() < 1e-6
+
+        # if there is a velocity, then you need to adjust the velocity as well
+        # as this will change too
         if rot_vel_index is not None:
             assert len(rot_vel_index) == 2
+
             obj_trajs[:, :, :, rot_vel_index] = common_utils.rotate_points_along_z(
                 points=obj_trajs[:, :, :, rot_vel_index].view(num_center_objects, -1, 2),
                 angle=-center_heading
@@ -268,10 +305,11 @@ class WaymoDataset(DatasetTemplate):
             obj_types (num_objects):
             center_indices (num_center_objects): the index of center objects in obj_trajs_past
             centered_valid_time_indices (num_center_objects), the last valid time index of center objects
-            timestamps ([type]): [description]
+            timestamps (10 + 1 = 11): [0, 0.1, 0.2, ..., 1.0]; this is due to sampling one second of history at 10 Hz and 1 current timestamp (1.0)
             obj_trajs_future (num_objects, num_future_timestamps, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
         Returns:
             ret_obj_trajs (num_center_objects, num_objects, num_timestamps, num_attrs):
+                [cx, cy, cz, dx, dy, dz, is_vehicle, is_pedestrian, is_cyclist, is_interesting_object/is_center_object, track_index, time stuff ..., direction_x, direction_y, vel_x, vel_y, accel_x, accel_y]
             ret_obj_valid_mask (num_center_objects, num_objects, num_timestamps):
             ret_obj_trajs_future (num_center_objects, num_objects, num_timestamps_future, 4):  [x, y, vx, vy]
             ret_obj_valid_mask_future (num_center_objects, num_objects, num_timestamps_future):
