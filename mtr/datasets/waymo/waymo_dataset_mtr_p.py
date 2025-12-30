@@ -14,7 +14,6 @@ from mtr.datasets.dataset import DatasetTemplate
 from mtr.utils import common_utils
 from mtr.config import cfg
 
-
 class WaymoDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, training=True, logger=None):
         super().__init__(dataset_cfg=dataset_cfg, training=training, logger=logger)
@@ -185,7 +184,7 @@ class WaymoDataset(DatasetTemplate):
         )
 
         # generate the labels of track_objects for training
-        # obj_trajs_future_state 
+        # obj_trajs_future_state
         center_obj_idxs = np.arange(len(track_index_to_predict))
         center_gt_trajs = obj_trajs_future_state[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps, 4)
         center_gt_trajs_mask = obj_trajs_future_mask[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps)
@@ -255,44 +254,47 @@ class WaymoDataset(DatasetTemplate):
         return center_objects, track_index_to_predict
 
     @staticmethod
-    def transform_trajs_to_center_coords(obj_trajs, center_xyz, center_heading, heading_index, rot_vel_index=None):
+    def transform_trajs_to_center_coords(obj_trajs, sdc_xyz, sdc_heading, heading_index, rot_vel_index=None):
         """
+        This function centers all trajectories to the perspective of the autonomous vehicle (indexed by sdc_track_index).
+
         Args:
             obj_trajs (num_objects, num_timestamps, num_attrs):
                 first three values of num_attrs are [x, y, z] or [x, y]
-            center_xyz (num_center_objects, 3 or 2): [x, y, z] or [x, y]
-            center_heading (num_center_objects):
+            sdc_xyz (3 or 2): [x, y, z] or [x, y]
+            sdc_heading (1,):
             heading_index: the index of heading angle in the num_attr-axis of obj_trajs
 
         Returns:
-            obj_trajs (num_center_objects, num_objects, num_timestamps, num_attrs)
+            obj_trajs (num_objects, num_timestamps, num_attrs)
         """
+        assert sdc_xyz.shape[-1] in [3, 2]
+        assert len(sdc_xyz.shape) == 1
+
         num_objects, num_timestamps, num_attrs = obj_trajs.shape
-        num_center_objects = center_xyz.shape[0]
-        assert center_xyz.shape[0] == center_heading.shape[0]
-        assert center_xyz.shape[1] in [3, 2]
 
-        # (num_center_objects, num_objects, num_timestamps, num_attrs)
-        obj_trajs = obj_trajs.clone().view(1, num_objects, num_timestamps, num_attrs).repeat(num_center_objects, 1, 1, 1)
-        obj_trajs[:, :, :, 0:center_xyz.shape[1]] -= center_xyz[:, None, None, :] # centering
-        obj_trajs[:, :, :, 0:2] = common_utils.rotate_points_along_z(
-            points=obj_trajs[:, :, :, 0:2].view(num_center_objects, -1, 2), # (num_center_objects, num_objects * num_timestamps, 2)
-            angle=-center_heading # (num_center_objects)
-        ).view(num_center_objects, num_objects, num_timestamps, 2)
+        obj_trajs = obj_trajs.clone()
+        obj_trajs[:, :, 0:sdc_xyz.shape[-1]] -= sdc_xyz[None, None, :] # centering
 
-        obj_trajs[:, :, :, heading_index] -= center_heading[:, None, None]
+        obj_trajs[:, :, 0:2] = common_utils.rotate_points_along_z(
+            points=obj_trajs[:, :, 0:2].view(-1, 2), # (num_objects * num_timestamps, 2)
+            angle=-sdc_heading # (1,)
+        ).view(num_objects, num_timestamps, 2)
 
-        assert torch.abs(obj_trajs[:, :, :, heading_index]).max() < 1e-6
+        obj_trajs[:, :, heading_index] -= sdc_heading
+
+        # TODO: not currently sure about this statement
+        # assert torch.abs(obj_trajs[:, :, heading_index]).max() < 1e-6
 
         # if there is a velocity, then you need to adjust the velocity as well
         # as this will change too
         if rot_vel_index is not None:
             assert len(rot_vel_index) == 2
 
-            obj_trajs[:, :, :, rot_vel_index] = common_utils.rotate_points_along_z(
-                points=obj_trajs[:, :, :, rot_vel_index].view(num_center_objects, -1, 2),
-                angle=-center_heading
-            ).view(num_center_objects, num_objects, num_timestamps, 2)
+            obj_trajs[:, :, rot_vel_index] = common_utils.rotate_points_along_z(
+                points=obj_trajs[:, :, rot_vel_index].view(-1, 2),
+                angle=-sdc_heading
+            ).view(num_objects, num_timestamps, 2)
 
         return obj_trajs
 
