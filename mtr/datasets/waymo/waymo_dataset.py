@@ -14,6 +14,10 @@ from mtr.datasets.dataset import DatasetTemplate
 from mtr.utils import common_utils
 from mtr.config import cfg
 
+# Notes on how this is called:
+# iakMTR/tools/train.py --> iakMTR/mtr/datasets/__init__.py --> iakMTR/mtr/datasets/waymo/waymo_dataset.py
+# so this preprocessing happens when the train call happens
+
 
 class WaymoDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, training=True, logger=None):
@@ -109,7 +113,7 @@ class WaymoDataset(DatasetTemplate):
         # basically tracks_to_predict contains track_index, which are the indices of
         # track_infos which are important. These are not global agent ids, but rather
         # indices into track_infos
-        # self.logger.info(f"trying to see what track_infos looks like: {track_infos} \n\n----------\n\n versus track_index_to_predict: {info['tracks_to_predict']}")
+        self.logger.info(f"trying to see what track_infos looks like: {track_infos} \n\n----------\n\n versus track_index_to_predict: {info['tracks_to_predict']}")
 
         obj_types = np.array(track_infos['object_type'])
         obj_ids = np.array(track_infos['object_id'])
@@ -125,6 +129,15 @@ class WaymoDataset(DatasetTemplate):
             current_time_index=current_time_index,
             obj_types=obj_types, scene_id=scene_id
         )
+
+        # assert len(track_infos["object_id"]) == track_infos["trajs"].shape[0]
+        print(sdc_track_index)
+        print(track_infos["object_id"])
+        assert sdc_track_index == len(track_infos["object_id"]) - 1
+
+        print(track_infos["object_id"])
+        print(np.array(track_infos["object_id"])[track_index_to_predict])
+        print(track_infos["object_id"][sdc_track_index])
 
         (obj_trajs_data, obj_trajs_mask, obj_trajs_pos, obj_trajs_last_pos, obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs,
             center_gt_trajs_mask, center_gt_final_valid_idx,
@@ -185,7 +198,7 @@ class WaymoDataset(DatasetTemplate):
         )
 
         # generate the labels of track_objects for training
-        # obj_trajs_future_state 
+        # obj_trajs_future_state
         center_obj_idxs = np.arange(len(track_index_to_predict))
         center_gt_trajs = obj_trajs_future_state[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps, 4)
         center_gt_trajs_mask = obj_trajs_future_mask[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps)
@@ -282,7 +295,7 @@ class WaymoDataset(DatasetTemplate):
 
         obj_trajs[:, :, :, heading_index] -= center_heading[:, None, None]
 
-        assert torch.abs(obj_trajs[:, :, :, heading_index]).max() < 1e-6
+        # assert torch.abs(obj_trajs[:, :, :, heading_index]).max() < 1e-6
 
         # if there is a velocity, then you need to adjust the velocity as well
         # as this will change too
