@@ -10,8 +10,7 @@ from torch.utils.data import DataLoader
 from mtr.utils import common_utils
 from pathlib import Path
 
-# from .waymo.waymo_dataset import WaymoDataset
-from .waymo.waymo_dataset_mtr_p import WaymoDataset
+from .waymo.waymo_dataset import WaymoDataset
 
 
 __all__ = {
@@ -36,7 +35,7 @@ def build_dataloader(dataset_cfg, batch_size, dist, workers=4,
     if logger:
         data_root = Path(dataset_cfg.DATA_ROOT)
         data_root = ".." / data_root
-        logger.info(f"Using DATA_ROOT: {data_root.resolve()}")
+        logger.info(f"Using DATA_ROOT: {data_root}")
         if not data_root.is_dir():
             raise RuntimeError(f"DATA_ROOT '{data_root.resolve()}' does not exist or is not a directory.")
 

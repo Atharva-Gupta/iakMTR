@@ -27,9 +27,6 @@ def rotate_points_along_z(points, angle):
     Returns:
 
     """
-    if angle.dim() == 0:
-        angle = angle.unsqueeze(0)
-
     points, is_numpy = check_numpy_to_torch(points)
     angle, _ = check_numpy_to_torch(angle)
 
