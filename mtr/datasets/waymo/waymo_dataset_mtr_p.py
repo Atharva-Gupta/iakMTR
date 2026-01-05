@@ -273,28 +273,25 @@ class WaymoDataset(DatasetTemplate):
 
         num_objects, num_timestamps, num_attrs = obj_trajs.shape
 
-        obj_trajs = obj_trajs.clone()
-        obj_trajs[:, :, 0:sdc_xyz.shape[-1]] -= sdc_xyz[None, None, :] # centering
+        obj_trajs = obj_trajs.clone().view(1, num_objects, num_timestamps, num_attrs)
+        obj_trajs[:, :, :, 0:sdc_xyz.shape[-1]] -= sdc_xyz[None, None, None, :] # centering
 
-        obj_trajs[:, :, 0:2] = common_utils.rotate_points_along_z(
-            points=obj_trajs[:, :, 0:2].view(-1, 2), # (num_objects * num_timestamps, 2)
+        obj_trajs[:, :, :, 0:2] = common_utils.rotate_points_along_z(
+            points=obj_trajs[:, :, :, 0:2].view(1, -1, 2), # (num_objects * num_timestamps, 2)
             angle=-sdc_heading # (1,)
-        ).view(num_objects, num_timestamps, 2)
+        ).view(1, num_objects, num_timestamps, 2)
 
-        obj_trajs[:, :, heading_index] -= sdc_heading
-
-        # TODO: not currently sure about this statement
-        # assert torch.abs(obj_trajs[:, :, heading_index]).max() < 1e-6
+        obj_trajs[:, :, :, heading_index] -= sdc_heading
 
         # if there is a velocity, then you need to adjust the velocity as well
         # as this will change too
         if rot_vel_index is not None:
             assert len(rot_vel_index) == 2
 
-            obj_trajs[:, :, rot_vel_index] = common_utils.rotate_points_along_z(
-                points=obj_trajs[:, :, rot_vel_index].view(-1, 2),
+            obj_trajs[:, :, :, rot_vel_index] = common_utils.rotate_points_along_z(
+                points=obj_trajs[:, :, :, rot_vel_index].view(1, -1, 2),
                 angle=-sdc_heading
-            ).view(num_objects, num_timestamps, 2)
+            ).view(1, num_objects, num_timestamps, 2)
 
         return obj_trajs
 

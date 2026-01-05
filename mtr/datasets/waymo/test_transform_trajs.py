@@ -1,19 +1,13 @@
 import unittest
 import numpy as np
-
-# Assuming the function is in a class named CoordinateTransform
-# from your_module import CoordinateTransform
 import os
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
-from waymo_dataset_mtr_p import WaymoDataset
-
-import unittest
-import numpy as np
-from waymo_dataset_mtr_p import WaymoDataset  # Adjust if your class name differs
 import math
 import torch
+
+# Assuming standard path setup
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+from waymo_dataset_mtr_p import WaymoDataset
 
 class TestTransformTrajs(unittest.TestCase):
 
@@ -29,7 +23,7 @@ class TestTransformTrajs(unittest.TestCase):
 
     def test_shapes(self):
         """
-        Test 1: Verify output dimensions match input dimensions (N, T, A).
+        Test 1: Verify output dimensions match input dimensions with extra dim (1, N, T, A).
         """
         obj_trajs = torch.zeros((self.num_objects, self.num_timestamps, self.num_attrs))
         sdc_xyz = torch.tensor([10.0, 10.0, 0.0])
@@ -42,8 +36,11 @@ class TestTransformTrajs(unittest.TestCase):
             heading_index=self.heading_idx
         )
 
-        self.assertEqual(result.shape, obj_trajs.shape,
-                         f"Expected shape {obj_trajs.shape}, got {result.shape}")
+        # Expected shape adds a dimension of size 1 at the start
+        expected_shape = (1, self.num_objects, self.num_timestamps, self.num_attrs)
+
+        self.assertEqual(result.shape, expected_shape,
+                         f"Expected shape {expected_shape}, got {result.shape}")
 
     def test_translation_logic(self):
         """
@@ -61,8 +58,8 @@ class TestTransformTrajs(unittest.TestCase):
 
         expected_pos = torch.tensor([5.0, 5.0])
 
-        # Check X, Y match
-        torch.testing.assert_close(result[0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
+        # Check result[0] (first center index) -> obj 0 -> time 0 -> pos
+        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
 
     def test_rotation_logic(self):
         """
@@ -85,8 +82,9 @@ class TestTransformTrajs(unittest.TestCase):
         # New Heading: 0 - pi/2 = -pi/2
         expected_heading = torch.tensor(-math.pi / 2)
 
-        torch.testing.assert_close(result[0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
-        torch.testing.assert_close(result[0, 0, 5], expected_heading, rtol=1e-4, atol=1e-4)
+        # Access index [0, 0, 0, ...]
+        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(result[0, 0, 0, 5], expected_heading, rtol=1e-4, atol=1e-4)
 
     def test_full_transform(self):
         """
@@ -107,7 +105,9 @@ class TestTransformTrajs(unittest.TestCase):
         result = self.func(obj_trajs, sdc_xyz, sdc_heading, heading_index=5)
 
         expected_pos = torch.tensor([0.0, -1.0])
-        torch.testing.assert_close(result[0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
+
+        # Access index [0, 0, 0, ...]
+        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
 
     def test_batch_processing(self):
         """
@@ -124,8 +124,10 @@ class TestTransformTrajs(unittest.TestCase):
 
         # Both objects should be transformed identically
         expected_pos = torch.tensor([5.0, 5.0])
-        torch.testing.assert_close(result[0, 0, :2], expected_pos)
-        torch.testing.assert_close(result[1, 0, :2], expected_pos)
+
+        # Access index [0, obj_idx, time, attrs]
+        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos)
+        torch.testing.assert_close(result[0, 1, 0, :2], expected_pos)
 
 if __name__ == '__main__':
     unittest.main()
