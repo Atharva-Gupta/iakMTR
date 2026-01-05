@@ -175,8 +175,8 @@ class WaymoDataset(DatasetTemplate):
             self, center_objects, obj_trajs_past, obj_trajs_future, track_index_to_predict, sdc_track_index, timestamps,
             obj_types, obj_ids
         ):
-        # obj_trajs_data: (num_center_objects, num_objects, num_timesteps, num_attrs <- 10)
-        # obj_trajs_future_state: (num_center_objects, num_objects, num_timestamps_future, num_attrs <- 4)
+        # obj_trajs_data: (1, num_objects, num_timesteps, num_attrs <- 10)
+        # obj_trajs_future_state: (1, num_objects, num_timestamps_future, num_attrs <- 4)
         obj_trajs_data, obj_trajs_mask, obj_trajs_future_state, obj_trajs_future_mask = self.generate_centered_trajs_for_agents(
             center_objects=center_objects, obj_trajs_past=obj_trajs_past,
             obj_types=obj_types, center_indices=track_index_to_predict,
@@ -185,19 +185,18 @@ class WaymoDataset(DatasetTemplate):
 
         # generate the labels of track_objects for training
         # obj_trajs_future_state
-        center_obj_idxs = np.arange(len(track_index_to_predict))
-        center_gt_trajs = obj_trajs_future_state[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps, 4)
-        center_gt_trajs_mask = obj_trajs_future_mask[center_obj_idxs, track_index_to_predict]  # (num_center_objects, num_future_timestamps)
+        center_gt_trajs = obj_trajs_future_state[:, track_index_to_predict]  # (1, num_future_timestamps, 4)
+        center_gt_trajs_mask = obj_trajs_future_mask[:, track_index_to_predict]  # (1, num_future_timestamps)
         center_gt_trajs[center_gt_trajs_mask == 0] = 0
 
         # filter invalid past trajs
         assert obj_trajs_past.__len__() == obj_trajs_data.shape[1]
         valid_past_mask = np.logical_not(obj_trajs_past[:, :, -1].sum(axis=-1) == 0)  # (num_objects (original))
 
-        obj_trajs_mask = obj_trajs_mask[:, valid_past_mask]  # (num_center_objects, num_objects (filtered), num_timestamps)
-        obj_trajs_data = obj_trajs_data[:, valid_past_mask]  # (num_center_objects, num_objects (filtered), num_timestamps, C)
-        obj_trajs_future_state = obj_trajs_future_state[:, valid_past_mask]  # (num_center_objects, num_objects (filtered), num_timestamps_future, 4):  [x, y, vx, vy]
-        obj_trajs_future_mask = obj_trajs_future_mask[:, valid_past_mask]  # (num_center_objects, num_objects, num_timestamps_future):
+        obj_trajs_mask = obj_trajs_mask[:, valid_past_mask]  # (1, num_objects (filtered), num_timestamps)
+        obj_trajs_data = obj_trajs_data[:, valid_past_mask]  # (1, num_objects (filtered), num_timestamps, C)
+        obj_trajs_future_state = obj_trajs_future_state[:, valid_past_mask]  # (1, num_objects (filtered), num_timestamps_future, 4):  [x, y, vx, vy]
+        obj_trajs_future_mask = obj_trajs_future_mask[:, valid_past_mask]  # (1, num_objects, num_timestamps_future):
         obj_types = obj_types[valid_past_mask]
         obj_ids = obj_ids[valid_past_mask]
 
@@ -211,11 +210,13 @@ class WaymoDataset(DatasetTemplate):
 
         # generate the final valid position of each object
         obj_trajs_pos = obj_trajs_data[:, :, :, 0:3]
-        num_center_objects, num_objects, num_timestamps, _ = obj_trajs_pos.shape
-        obj_trajs_last_pos = np.zeros((num_center_objects, num_objects, 3), dtype=np.float32)
+        _, num_objects, num_timestamps, _ = obj_trajs_pos.shape
+        obj_trajs_last_pos = np.zeros((1, num_objects, 3), dtype=np.float32)
         for k in range(num_timestamps):
             cur_valid_mask = obj_trajs_mask[:, :, k] > 0  # (num_center_objects, num_objects)
             obj_trajs_last_pos[cur_valid_mask] = obj_trajs_pos[:, :, k, :][cur_valid_mask]
+
+        num_center_objects = len(center_objects)
 
         center_gt_final_valid_idx = np.zeros((num_center_objects), dtype=np.float32)
         for k in range(center_gt_trajs_mask.shape[1]):
@@ -266,7 +267,7 @@ class WaymoDataset(DatasetTemplate):
             heading_index: the index of heading angle in the num_attr-axis of obj_trajs
 
         Returns:
-            obj_trajs (num_objects, num_timestamps, num_attrs)
+            obj_trajs (1, num_objects, num_timestamps, num_attrs)
         """
         assert sdc_xyz.shape[-1] in [3, 2]
         assert len(sdc_xyz.shape) == 1
@@ -322,33 +323,36 @@ class WaymoDataset(DatasetTemplate):
         obj_trajs_past = torch.from_numpy(obj_trajs_past).float()
         timestamps = torch.from_numpy(timestamps)
 
-        # transform coordinates to the centered objects
+        sdc_xyz = obj_trajs_past[sdc_index, -1, 0:3]
+        sdc_heading = obj_trajs_past[sdc_index, -1, 6]
+
+        # transform coordinates to the autonomous vehicle frame
+        # (1, num_objects, num_timestamps, 10)
         obj_trajs = self.transform_trajs_to_center_coords(
             obj_trajs=obj_trajs_past,
-            center_xyz=center_objects[:, 0:3],
-            center_heading=center_objects[:, 6],
+            sdc_xyz=sdc_xyz,
+            sdc_heading=sdc_heading,
             heading_index=6, rot_vel_index=[7, 8]
         )
 
         ## generate the attributes for each object
-        object_onehot_mask = torch.zeros((num_center_objects, num_objects, num_timestamps, 5))
+        object_onehot_mask = torch.zeros((1, num_objects, num_timestamps, 4))
         object_onehot_mask[:, obj_types == 'TYPE_VEHICLE', :, 0] = 1
         object_onehot_mask[:, obj_types == 'TYPE_PEDESTRAIN', :, 1] = 1  # TODO: CHECK THIS TYPO
         object_onehot_mask[:, obj_types == 'TYPE_CYCLIST', :, 2] = 1
-        object_onehot_mask[torch.arange(num_center_objects), center_indices, :, 3] = 1
-        object_onehot_mask[:, sdc_index, :, 4] = 1
+        object_onehot_mask[:, sdc_index, :, 3] = 1
 
-        object_time_embedding = torch.zeros((num_center_objects, num_objects, num_timestamps, num_timestamps + 1))
+        object_time_embedding = torch.zeros((1, num_objects, num_timestamps, num_timestamps + 1))
         object_time_embedding[:, :, torch.arange(num_timestamps), torch.arange(num_timestamps)] = 1
         object_time_embedding[:, :, torch.arange(num_timestamps), -1] = timestamps
 
-        object_heading_embedding = torch.zeros((num_center_objects, num_objects, num_timestamps, 2))
+        object_heading_embedding = torch.zeros((1, num_objects, num_timestamps, 2))
         object_heading_embedding[:, :, :, 0] = np.sin(obj_trajs[:, :, :, 6])
         object_heading_embedding[:, :, :, 1] = np.cos(obj_trajs[:, :, :, 6])
 
-        vel = obj_trajs[:, :, :, 7:9]  # (num_centered_objects, num_objects, num_timestamps, 2)
+        vel = obj_trajs[:, :, :, 7:9]  # (1, num_objects, num_timestamps, 2)
         vel_pre = torch.roll(vel, shifts=1, dims=2)
-        acce = (vel - vel_pre) / 0.1  # (num_centered_objects, num_objects, num_timestamps, 2)
+        acce = (vel - vel_pre) / 0.1  # (1, num_objects, num_timestamps, 2)
         acce[:, :, 0, :] = acce[:, :, 1, :]
 
         ret_obj_trajs = torch.cat((
@@ -360,19 +364,19 @@ class WaymoDataset(DatasetTemplate):
             acce,
         ), dim=-1)
 
-        ret_obj_valid_mask = obj_trajs[:, :, :, -1]  # (num_center_obejcts, num_objects, num_timestamps)  # TODO: CHECK THIS, 20220322
+        ret_obj_valid_mask = obj_trajs[:, :, :, -1]  # (1, num_objects, num_timestamps)  # TODO: CHECK THIS, 20220322
         ret_obj_trajs[ret_obj_valid_mask == 0] = 0
 
         ##  generate label for future trajectories
         obj_trajs_future = torch.from_numpy(obj_trajs_future).float()
         obj_trajs_future = self.transform_trajs_to_center_coords(
             obj_trajs=obj_trajs_future,
-            center_xyz=center_objects[:, 0:3],
-            center_heading=center_objects[:, 6],
+            sdc_xyz=sdc_xyz,
+            sdc_heading=sdc_heading,
             heading_index=6, rot_vel_index=[7, 8]
         )
         ret_obj_trajs_future = obj_trajs_future[:, :, :, [0, 1, 7, 8]]  # (x, y, vx, vy)
-        ret_obj_valid_mask_future = obj_trajs_future[:, :, :, -1]  # (num_center_obejcts, num_objects, num_timestamps_future)  # TODO: CHECK THIS, 20220322
+        ret_obj_valid_mask_future = obj_trajs_future[:, :, :, -1]  # (1, num_objects, num_timestamps_future)  # TODO: CHECK THIS, 20220322
         ret_obj_trajs_future[ret_obj_valid_mask_future == 0] = 0
 
         return ret_obj_trajs.numpy(), ret_obj_valid_mask.numpy(), ret_obj_trajs_future.numpy(), ret_obj_valid_mask_future.numpy()
