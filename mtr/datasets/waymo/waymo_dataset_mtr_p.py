@@ -308,11 +308,11 @@ class WaymoDataset(DatasetTemplate):
             timestamps (10 + 1 = 11): [0, 0.1, 0.2, ..., 1.0]; this is due to sampling one second of history at 10 Hz and 1 current timestamp (1.0)
             obj_trajs_future (num_objects, num_future_timestamps, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
         Returns:
-            ret_obj_trajs (num_center_objects, num_objects, num_timestamps, num_attrs):
+            ret_obj_trajs (1, num_objects, num_timestamps, num_attrs):
                 [cx, cy, cz, dx, dy, dz, is_vehicle, is_pedestrian, is_cyclist, is_interesting_object/is_center_object, track_index, time stuff ..., direction_x, direction_y, vel_x, vel_y, accel_x, accel_y]
-            ret_obj_valid_mask (num_center_objects, num_objects, num_timestamps):
-            ret_obj_trajs_future (num_center_objects, num_objects, num_timestamps_future, 4):  [x, y, vx, vy]
-            ret_obj_valid_mask_future (num_center_objects, num_objects, num_timestamps_future):
+            ret_obj_valid_mask (1, num_objects, num_timestamps):
+            ret_obj_trajs_future (1, num_objects, num_timestamps_future, 4):  [x, y, vx, vy]
+            ret_obj_valid_mask_future (1, num_objects, num_timestamps_future):
         """
         assert obj_trajs_past.shape[-1] == 10
         assert center_objects.shape[-1] == 10
@@ -378,6 +378,8 @@ class WaymoDataset(DatasetTemplate):
         ret_obj_trajs_future = obj_trajs_future[:, :, :, [0, 1, 7, 8]]  # (x, y, vx, vy)
         ret_obj_valid_mask_future = obj_trajs_future[:, :, :, -1]  # (1, num_objects, num_timestamps_future)  # TODO: CHECK THIS, 20220322
         ret_obj_trajs_future[ret_obj_valid_mask_future == 0] = 0
+
+        assert ret_obj_trajs.shape[0] == ret_obj_trajs_future.shape[0] == ret_obj_valid_mask.shape[0] == ret_obj_valid_mask_future.shape[0] == 1
 
         return ret_obj_trajs.numpy(), ret_obj_valid_mask.numpy(), ret_obj_trajs_future.numpy(), ret_obj_valid_mask_future.numpy()
 
