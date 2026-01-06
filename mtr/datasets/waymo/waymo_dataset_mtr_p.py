@@ -127,7 +127,7 @@ class WaymoDataset(DatasetTemplate):
 
         (obj_trajs_data, obj_trajs_mask, obj_trajs_pos, obj_trajs_last_pos, obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs,
             center_gt_trajs_mask, center_gt_final_valid_idx,
-            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids) = self.create_agent_data_for_center_objects(
+            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, sdc_xyz, sdc_heading) = self.create_agent_data_for_center_objects(
             center_objects=center_objects, obj_trajs_past=obj_trajs_past, obj_trajs_future=obj_trajs_future,
             track_index_to_predict=track_index_to_predict, sdc_track_index=sdc_track_index,
             timestamps=timestamps, obj_types=obj_types, obj_ids=obj_ids
@@ -163,6 +163,7 @@ class WaymoDataset(DatasetTemplate):
             map_polylines_data, map_polylines_mask, map_polylines_center = self.create_map_data_for_center_objects(
                 center_objects=center_objects, map_infos=info['map_infos'],
                 center_offset=self.dataset_cfg.get('CENTER_OFFSET_OF_MAP', (30.0, 0)),
+                sdc_xyz=sdc_xyz, sdc_heading=sdc_heading
             )   # (num_center_objects, num_topk_polylines, num_points_each_polyline, 9), (num_center_objects, num_topk_polylines, num_points_each_polyline)
 
             ret_dict['map_polylines'] = map_polylines_data
@@ -177,7 +178,7 @@ class WaymoDataset(DatasetTemplate):
         ):
         # obj_trajs_data: (1, num_objects, num_timesteps, num_attrs <- 10)
         # obj_trajs_future_state: (1, num_objects, num_timestamps_future, num_attrs <- 4)
-        obj_trajs_data, obj_trajs_mask, obj_trajs_future_state, obj_trajs_future_mask = self.generate_centered_trajs_for_agents(
+        obj_trajs_data, obj_trajs_mask, obj_trajs_future_state, obj_trajs_future_mask, sdc_xyz, sdc_heading = self.generate_centered_trajs_for_agents(
             center_objects=center_objects, obj_trajs_past=obj_trajs_past,
             obj_types=obj_types, center_indices=track_index_to_predict,
             sdc_index=sdc_track_index, timestamps=timestamps, obj_trajs_future=obj_trajs_future
@@ -236,7 +237,7 @@ class WaymoDataset(DatasetTemplate):
 
         return (obj_trajs_data, obj_trajs_mask > 0, obj_trajs_pos, obj_trajs_last_pos,
             obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs[0], center_gt_trajs_mask[0], center_gt_final_valid_idx,
-            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids)
+            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, sdc_xyz, sdc_heading)
 
     def get_interested_agents(self, track_index_to_predict, obj_trajs_full, current_time_index, obj_types, scene_id):
         """
@@ -394,7 +395,7 @@ class WaymoDataset(DatasetTemplate):
 
         assert ret_obj_trajs.shape[0] == ret_obj_trajs_future.shape[0] == ret_obj_valid_mask.shape[0] == ret_obj_valid_mask_future.shape[0] == 1
 
-        return ret_obj_trajs.numpy(), ret_obj_valid_mask.numpy(), ret_obj_trajs_future.numpy(), ret_obj_valid_mask_future.numpy()
+        return ret_obj_trajs.numpy(), ret_obj_valid_mask.numpy(), ret_obj_trajs_future.numpy(), ret_obj_valid_mask_future.numpy(), sdc_xyz, sdc_heading
 
     @staticmethod
     def generate_batch_polylines_from_map(polylines, point_sampled_interval=1, vector_break_dist_thresh=1.0, num_points_each_polyline=20):
@@ -444,7 +445,7 @@ class WaymoDataset(DatasetTemplate):
         # assert center_dist.max() < 10
         return ret_polylines, ret_polylines_mask
 
-    def create_map_data_for_center_objects(self, center_objects, map_infos, center_offset):
+    def create_map_data_for_center_objects(self, center_objects, map_infos, center_offset, sdc_xyz, sdc_heading):
         """
         Args:
             center_objects (num_center_objects, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
@@ -455,76 +456,49 @@ class WaymoDataset(DatasetTemplate):
             map_polylines (num_center_objects, num_topk_polylines, num_points_each_polyline, 9): [x, y, z, dir_x, dir_y, dir_z, global_type, pre_x, pre_y]
             map_polylines_mask (num_center_objects, num_topk_polylines, num_points_each_polyline)
         """
-        num_center_objects = center_objects.shape[0]
-
-        # transform object coordinates by center objects
-        def transform_to_center_coordinates(neighboring_polylines, neighboring_polyline_valid_mask):
-            neighboring_polylines[:, :, :, 0:3] -= center_objects[:, None, None, 0:3]
-            neighboring_polylines[:, :, :, 0:2] = common_utils.rotate_points_along_z(
-                points=neighboring_polylines[:, :, :, 0:2].view(num_center_objects, -1, 2),
-                angle=-center_objects[:, 6]
-            ).view(num_center_objects, -1, batch_polylines.shape[1], 2)
-            neighboring_polylines[:, :, :, 3:5] = common_utils.rotate_points_along_z(
-                points=neighboring_polylines[:, :, :, 3:5].view(num_center_objects, -1, 2),
-                angle=-center_objects[:, 6]
-            ).view(num_center_objects, -1, batch_polylines.shape[1], 2)
-
-            # use pre points to map
-            # (num_center_objects, num_polylines, num_points_each_polyline, num_feat)
-            xy_pos_pre = neighboring_polylines[:, :, :, 0:2]
-            xy_pos_pre = torch.roll(xy_pos_pre, shifts=1, dims=-2)
-            xy_pos_pre[:, :, 0, :] = xy_pos_pre[:, :, 1, :]
-            neighboring_polylines = torch.cat((neighboring_polylines, xy_pos_pre), dim=-1)
-
-            neighboring_polylines[neighboring_polyline_valid_mask == 0] = 0
-            return neighboring_polylines, neighboring_polyline_valid_mask
-
         polylines = torch.from_numpy(map_infos['all_polylines'].copy())
 
         self.logger.info(f"----\n POLYLINE SHAPES: {polylines.shape} \n----")
 
         center_objects = torch.from_numpy(center_objects)
 
+        # batch_polylines: (num_polylines, num_points_each_polyline, 7)
+        # batch_polylines_mask: (num_polylines, num_points_each_polyline)
         batch_polylines, batch_polylines_mask = self.generate_batch_polylines_from_map(
             polylines=polylines.numpy(), point_sampled_interval=self.dataset_cfg.get('POINT_SAMPLED_INTERVAL', 1),
             vector_break_dist_thresh=self.dataset_cfg.get('VECTOR_BREAK_DIST_THRESH', 1.0),
             num_points_each_polyline=self.dataset_cfg.get('NUM_POINTS_EACH_POLYLINE', 20),
-        )  # (num_polylines, num_points_each_polyline, 7), (num_polylines, num_points_each_polyline)
-
-        # collect a number of closest polylines for each center objects
-        num_of_src_polylines = self.dataset_cfg.NUM_OF_SRC_POLYLINES
-
-        if len(batch_polylines) > num_of_src_polylines:
-            polyline_center = batch_polylines[:, :, 0:2].sum(dim=1) / torch.clamp_min(batch_polylines_mask.sum(dim=1).float()[:, None], min=1.0)
-            center_offset_rot = torch.from_numpy(np.array(center_offset, dtype=np.float32))[None, :].repeat(num_center_objects, 1)
-            center_offset_rot = common_utils.rotate_points_along_z(
-                points=center_offset_rot.view(num_center_objects, 1, 2),
-                angle=center_objects[:, 6]
-            ).view(num_center_objects, 2)
-
-            pos_of_map_centers = center_objects[:, 0:2] + center_offset_rot
-
-            dist = (pos_of_map_centers[:, None, :] - polyline_center[None, :, :]).norm(dim=-1)  # (num_center_objects, num_polylines)
-            topk_dist, topk_idxs = dist.topk(k=num_of_src_polylines, dim=-1, largest=False)
-            map_polylines = batch_polylines[topk_idxs]  # (num_center_objects, num_topk_polylines, num_points_each_polyline, 7)
-            map_polylines_mask = batch_polylines_mask[topk_idxs]  # (num_center_objects, num_topk_polylines, num_points_each_polyline)
-        else:
-            map_polylines = batch_polylines[None, :, :, :].repeat(num_center_objects, 1, 1, 1)
-            map_polylines_mask = batch_polylines_mask[None, :, :].repeat(num_center_objects, 1, 1)
-
-        map_polylines, map_polylines_mask = transform_to_center_coordinates(
-            neighboring_polylines=map_polylines,
-            neighboring_polyline_valid_mask=map_polylines_mask
         )
 
-        temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)  # (num_center_objects, num_polylines, 3)
-        map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)  # (num_center_objects, num_polylines, 3)
+        batch_polylines[:, :, 0:3] -= sdc_xyz.float()[None, None, :]
 
-        map_polylines = map_polylines.numpy()
-        map_polylines_mask = map_polylines_mask.numpy()
-        map_polylines_center = map_polylines_center.numpy()
+        num_polylines, num_points, _ = batch_polylines.shape
 
-        return map_polylines, map_polylines_mask, map_polylines_center
+        batch_polylines[:, :, 0:2] = common_utils.rotate_points_along_z(
+            points=batch_polylines[:, :, 0:2].view(1, -1, 2),
+            angle=-sdc_heading
+        ).view(num_polylines, num_points, 2)
+
+        batch_polylines[:, :, 3:5] = common_utils.rotate_points_along_z(
+            points=batch_polylines[:, :, 3:5].view(1, -1, 2),
+            angle=-sdc_heading
+        ).view(num_polylines, num_points, 2)
+
+        xy_pos_pre = batch_polylines[:, :, 0:2]
+        xy_pos_pre = torch.roll(xy_pos_pre, shifts=1, dims=-2)
+        xy_pos_pre[:, 0, :] = xy_pos_pre[:, 1, :] # Fix first point
+        batch_polylines = torch.cat((batch_polylines, xy_pos_pre), dim=-1)
+
+        batch_polylines[batch_polylines_mask == 0] = 0
+
+        map_polylines = batch_polylines.unsqueeze(0)
+        map_polylines_mask = batch_polylines_mask.unsqueeze(0)
+
+        # 5. Calculate Centers (for Relative Positional Encoding later)
+        temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)
+        map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)
+
+        return map_polylines.numpy(), map_polylines_mask.numpy(), map_polylines_center.numpy()
 
     def generate_prediction_dicts(self, batch_dict, output_path=None):
         """
