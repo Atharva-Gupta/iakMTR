@@ -30,6 +30,9 @@ def rotate_points_along_z(points, angle):
     points, is_numpy = check_numpy_to_torch(points)
     angle, _ = check_numpy_to_torch(angle)
 
+    if angle.dim() == 0:
+        angle = angle.unsqueeze(0)
+
     cosa = torch.cos(angle)
     sina = torch.sin(angle)
     zeros = angle.new_zeros(points.shape[0])

@@ -183,11 +183,21 @@ class WaymoDataset(DatasetTemplate):
             sdc_index=sdc_track_index, timestamps=timestamps, obj_trajs_future=obj_trajs_future
         )
 
+        print("comparing cuz confuzzled", center_objects.shape[0], obj_trajs_data.shape[1])
+
+        assert obj_trajs_future_state.shape[:2] == obj_trajs_data.shape[:2]
+
+        print("FUTURE", obj_trajs_future_state.shape)
+        print("FUTURE MASK", obj_trajs_future_mask.shape)
+
         # generate the labels of track_objects for training
         # obj_trajs_future_state
-        center_gt_trajs = obj_trajs_future_state[:, track_index_to_predict]  # (1, num_future_timestamps, 4)
-        center_gt_trajs_mask = obj_trajs_future_mask[:, track_index_to_predict]  # (1, num_future_timestamps)
+        center_gt_trajs = obj_trajs_future_state[:, track_index_to_predict, :, :]  # (1, num_center_objects, num_future_timestamps, 4)
+        center_gt_trajs_mask = obj_trajs_future_mask[:, track_index_to_predict, :]  # (1, num_center_objects, num_future_timestamps)
         center_gt_trajs[center_gt_trajs_mask == 0] = 0
+
+        print("GT", center_gt_trajs.shape)
+        print("GTM", center_gt_trajs_mask.shape)
 
         # filter invalid past trajs
         assert obj_trajs_past.__len__() == obj_trajs_data.shape[1]
@@ -218,13 +228,14 @@ class WaymoDataset(DatasetTemplate):
 
         num_center_objects = len(center_objects)
 
-        center_gt_final_valid_idx = np.zeros((num_center_objects), dtype=np.float32)
-        for k in range(center_gt_trajs_mask.shape[1]):
-            cur_valid_mask = center_gt_trajs_mask[:, k] > 0  # (num_center_objects)
+        # latest timestep until the ground truth is valid
+        center_gt_final_valid_idx = np.zeros((center_gt_trajs.shape[1]), dtype=np.float32)
+        for k in range(center_gt_trajs_mask.shape[-1]):  # num_future_timestamps
+            cur_valid_mask = (center_gt_trajs_mask[:, :, k] > 0)[0]
             center_gt_final_valid_idx[cur_valid_mask] = k
 
         return (obj_trajs_data, obj_trajs_mask > 0, obj_trajs_pos, obj_trajs_last_pos,
-            obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs, center_gt_trajs_mask, center_gt_final_valid_idx,
+            obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs[0], center_gt_trajs_mask[0], center_gt_final_valid_idx,
             track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids)
 
     def get_interested_agents(self, track_index_to_predict, obj_trajs_full, current_time_index, obj_types, scene_id):
@@ -277,8 +288,10 @@ class WaymoDataset(DatasetTemplate):
         obj_trajs = obj_trajs.clone().view(1, num_objects, num_timestamps, num_attrs)
         obj_trajs[:, :, :, 0:sdc_xyz.shape[-1]] -= sdc_xyz[None, None, None, :] # centering
 
+        # print("sdc", sdc_heading)
+
         obj_trajs[:, :, :, 0:2] = common_utils.rotate_points_along_z(
-            points=obj_trajs[:, :, :, 0:2].view(1, -1, 2), # (num_objects * num_timestamps, 2)
+            points=obj_trajs[:, :, :, 0:2].view(-1, 2), # (num_objects * num_timestamps, 2)
             angle=-sdc_heading # (1,)
         ).view(1, num_objects, num_timestamps, 2)
 
@@ -467,6 +480,9 @@ class WaymoDataset(DatasetTemplate):
             return neighboring_polylines, neighboring_polyline_valid_mask
 
         polylines = torch.from_numpy(map_infos['all_polylines'].copy())
+
+        self.logger.info(f"----\n POLYLINE SHAPES: {polylines.shape} \n----")
+
         center_objects = torch.from_numpy(center_objects)
 
         batch_polylines, batch_polylines_mask = self.generate_batch_polylines_from_map(
