@@ -10,7 +10,8 @@ from torch.utils.data import DataLoader
 from mtr.utils import common_utils
 from pathlib import Path
 
-from .waymo.waymo_dataset import WaymoDataset
+# from .waymo.waymo_dataset import WaymoDataset
+from .waymo.waymo_dataset_mtr_p import WaymoDataset
 
 
 __all__ = {
