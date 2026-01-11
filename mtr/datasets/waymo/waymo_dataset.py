@@ -464,11 +464,13 @@ class WaymoDataset(DatasetTemplate):
                 angle=-center_objects[:, 6]
             ).view(num_center_objects, -1, batch_polylines.shape[1], 2)
 
-            # use pre points to map
-            # (num_center_objects, num_polylines, num_points_each_polyline, num_feat)
+            # idea here is that each point of a polyline is seen completely independently by the model
+            # so, we need to pass in the previous point so that the model has some idea of a vector
+            # and can better understand the structure of the polyline
             xy_pos_pre = neighboring_polylines[:, :, :, 0:2]
             xy_pos_pre = torch.roll(xy_pos_pre, shifts=1, dims=-2)
             xy_pos_pre[:, :, 0, :] = xy_pos_pre[:, :, 1, :]
+            # (num_center_objects, num_polylines, num_points_each_polyline, num_feat + 2)
             neighboring_polylines = torch.cat((neighboring_polylines, xy_pos_pre), dim=-1)
 
             neighboring_polylines[neighboring_polyline_valid_mask == 0] = 0
@@ -487,6 +489,7 @@ class WaymoDataset(DatasetTemplate):
         num_of_src_polylines = self.dataset_cfg.NUM_OF_SRC_POLYLINES
 
         if len(batch_polylines) > num_of_src_polylines:
+            # (num_polylines, 2) <- basically the average xy position of each polyline
             polyline_center = batch_polylines[:, :, 0:2].sum(dim=1) / torch.clamp_min(batch_polylines_mask.sum(dim=1).float()[:, None], min=1.0)
             center_offset_rot = torch.from_numpy(np.array(center_offset, dtype=np.float32))[None, :].repeat(num_center_objects, 1)
             center_offset_rot = common_utils.rotate_points_along_z(
@@ -494,8 +497,13 @@ class WaymoDataset(DatasetTemplate):
                 angle=center_objects[:, 6]
             ).view(num_center_objects, 2)
 
+            # center_offset_rot essentially is the vector (30, 0) (based on offset value)
+            # rotated into all of the different center_objects frames.
+            # When we add this to center_objects[:, 0:2], we essentially get a point
+            # 30 meters ahead of the object, in the direction the object is facing.
             pos_of_map_centers = center_objects[:, 0:2] + center_offset_rot
 
+            # we choose the closest polylines to each agent based on this future point (30 meters ahead)
             dist = (pos_of_map_centers[:, None, :] - polyline_center[None, :, :]).norm(dim=-1)  # (num_center_objects, num_polylines)
             topk_dist, topk_idxs = dist.topk(k=num_of_src_polylines, dim=-1, largest=False)
             map_polylines = batch_polylines[topk_idxs]  # (num_center_objects, num_topk_polylines, num_points_each_polyline, 7)
@@ -509,6 +517,7 @@ class WaymoDataset(DatasetTemplate):
             neighboring_polyline_valid_mask=map_polylines_mask
         )
 
+        # calculating an average position for all the unmasked polylines
         temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)  # (num_center_objects, num_polylines, 3)
         map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)  # (num_center_objects, num_polylines, 3)
 
