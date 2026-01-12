@@ -178,7 +178,7 @@ class WaymoDataset(DatasetTemplate):
         ):
         # obj_trajs_data: (1, num_objects, num_timesteps, num_attrs <- 10)
         # obj_trajs_future_state: (1, num_objects, num_timestamps_future, num_attrs <- 4)
-        obj_trajs_data, obj_trajs_mask, obj_trajs_future_state, obj_trajs_future_mask, sdc_xyz, sdc_heading = self.generate_centered_trajs_for_agents(
+        obj_trajs_data, obj_trajs_mask, obj_trajs_future_state, obj_trajs_future_mask, obj_current_positions_sdc, obj_current_headings_sdc, sdc_xyz, sdc_heading = self.generate_centered_trajs_for_agents(
             center_objects=center_objects, obj_trajs_past=obj_trajs_past,
             obj_types=obj_types, center_indices=track_index_to_predict,
             sdc_index=sdc_track_index, timestamps=timestamps, obj_trajs_future=obj_trajs_future
@@ -310,6 +310,43 @@ class WaymoDataset(DatasetTemplate):
 
         return obj_trajs
 
+    @staticmethod
+    def transform_trajs_to_agent_frames(obj_trajs, heading_index, rot_vel_index=None):
+        """
+        obj_trajs (1, num_objects, num_timestamps, num_attrs):
+                first three values of num_attrs are [x, y, z] or [x, y]
+        """
+        _, num_objects, num_timestamps, num_attrs = obj_trajs.shape
+
+        obj_trajs = obj_trajs.clone().view(1, num_objects, num_timestamps, num_attrs)
+
+        orig_obj_positions = obj_trajs[:, :, -1, 0:3].clone()  # (1, num_objects, 3)
+
+        orig_obj_headings = obj_trajs[:, :, -1, heading_index].clone()  # (1, num_objects)
+
+        obj_trajs[:, :, :, 0:3] -= orig_obj_positions[:, :, None, :] # centering
+        obj_trajs[:, :, :, 0:2] = common_utils.rotate_points_along_z(
+            points=obj_trajs[:, :, :, 0:2].view(num_objects, -1, 2), # (num_objects * num_timestamps, 2)
+            angle=-orig_obj_headings
+        ).view(1, num_objects, num_timestamps, 2)
+
+        obj_trajs[:, :, :, heading_index] -= orig_obj_headings[:, :, None]
+
+        # if there is a velocity, then you need to adjust the velocity as well
+        # to account for heading
+        if rot_vel_index is not None:
+            assert len(rot_vel_index) == 2
+
+            # print(obj_trajs[:, :, :, rot_vel_index].shape)
+            # print(orig_obj_headings.shape)
+
+            obj_trajs[:, :, :, rot_vel_index] = common_utils.rotate_points_along_z(
+                points=obj_trajs[:, :, :, rot_vel_index].view(-1, num_timestamps, 2),
+                angle=-orig_obj_headings.view(-1)
+            ).view(1, num_objects, num_timestamps, 2)
+
+        return obj_trajs, orig_obj_positions, orig_obj_headings
+
     def generate_centered_trajs_for_agents(self, center_objects, obj_trajs_past, obj_types, center_indices, sdc_index, timestamps, obj_trajs_future):
         """[summary]
 
@@ -346,13 +383,23 @@ class WaymoDataset(DatasetTemplate):
             obj_trajs=obj_trajs_past,
             sdc_xyz=sdc_xyz,
             sdc_heading=sdc_heading,
-            heading_index=6, rot_vel_index=[7, 8]
+            heading_index=6,
+            rot_vel_index=[7, 8],
+        )
+
+        # print(type(obj_trajs))
+        # print(obj_trajs.shape)
+
+        obj_trajs, obj_current_positions_sdc, obj_current_headings_sdc = self.transform_trajs_to_agent_frames(
+            obj_trajs=obj_trajs,
+            heading_index=6,
+            rot_vel_index=[7, 8]
         )
 
         ## generate the attributes for each object
         object_onehot_mask = torch.zeros((1, num_objects, num_timestamps, 5))
         object_onehot_mask[:, obj_types == 'TYPE_VEHICLE', :, 0] = 1
-        object_onehot_mask[:, obj_types == 'TYPE_PEDESTRIAN', :, 1] = 1  # TODO: CHECK THIS TYPO
+        object_onehot_mask[:, obj_types == 'TYPE_PEDESTRIAN', :, 1] = 1
         object_onehot_mask[:, obj_types == 'TYPE_CYCLIST', :, 2] = 1
         object_onehot_mask[:, obj_types == 'TYPE_OTHER', :, 3] = 1
         object_onehot_mask[:, sdc_index, :, 4] = 1
@@ -362,8 +409,8 @@ class WaymoDataset(DatasetTemplate):
         object_time_embedding[:, :, torch.arange(num_timestamps), -1] = timestamps
 
         object_heading_embedding = torch.zeros((1, num_objects, num_timestamps, 2))
-        object_heading_embedding[:, :, :, 0] = np.sin(obj_trajs[:, :, :, 6])
-        object_heading_embedding[:, :, :, 1] = np.cos(obj_trajs[:, :, :, 6])
+        object_heading_embedding[:, :, :, 0] = torch.sin(obj_trajs[:, :, :, 6])
+        object_heading_embedding[:, :, :, 1] = torch.cos(obj_trajs[:, :, :, 6])
 
         vel = obj_trajs[:, :, :, 7:9]  # (1, num_objects, num_timestamps, 2)
         vel_pre = torch.roll(vel, shifts=1, dims=2)
@@ -390,13 +437,20 @@ class WaymoDataset(DatasetTemplate):
             sdc_heading=sdc_heading,
             heading_index=6, rot_vel_index=[7, 8]
         )
+
+        obj_trajs_future[:, :, :, 0:3] -= obj_current_positions_sdc[:, :, None, :]
+        obj_trajs_future[:, :, :, 0:2] = common_utils.rotate_points_along_z(
+            points=obj_trajs_future[:, :, :, 0:2].view(num_objects, -1, 2),
+            angle=-obj_current_headings_sdc
+        ).view(1, num_objects, -1, 2)
+
         ret_obj_trajs_future = obj_trajs_future[:, :, :, [0, 1, 7, 8]]  # (x, y, vx, vy)
         ret_obj_valid_mask_future = obj_trajs_future[:, :, :, -1]  # (1, num_objects, num_timestamps_future)  # TODO: CHECK THIS, 20220322
         ret_obj_trajs_future[ret_obj_valid_mask_future == 0] = 0
 
         assert ret_obj_trajs.shape[0] == ret_obj_trajs_future.shape[0] == ret_obj_valid_mask.shape[0] == ret_obj_valid_mask_future.shape[0] == 1
 
-        return ret_obj_trajs.numpy(), ret_obj_valid_mask.numpy(), ret_obj_trajs_future.numpy(), ret_obj_valid_mask_future.numpy(), sdc_xyz, sdc_heading
+        return ret_obj_trajs.numpy(), ret_obj_valid_mask.numpy(), ret_obj_trajs_future.numpy(), ret_obj_valid_mask_future.numpy(), obj_current_positions_sdc.numpy(), obj_current_headings_sdc.numpy(), sdc_xyz, sdc_heading
 
     @staticmethod
     def generate_batch_polylines_from_map(polylines, point_sampled_interval=1, vector_break_dist_thresh=1.0, num_points_each_polyline=20):
@@ -453,6 +507,8 @@ class WaymoDataset(DatasetTemplate):
             map_infos (dict):
                 all_polylines (num_points, 7): [x, y, z, dir_x, dir_y, dir_z, global_type]
             center_offset (2):, [offset_x, offset_y]
+            sdc_xyz (2):, [offset_x, offset_y]
+            sdc_heading (1):, [angle]
         Returns:
             map_polylines (num_center_objects, num_topk_polylines, num_points_each_polyline, 9): [x, y, z, dir_x, dir_y, dir_z, global_type, pre_x, pre_y]
             map_polylines_mask (num_center_objects, num_topk_polylines, num_points_each_polyline)
@@ -495,7 +551,7 @@ class WaymoDataset(DatasetTemplate):
         map_polylines = batch_polylines.unsqueeze(0)
         map_polylines_mask = batch_polylines_mask.unsqueeze(0)
 
-        # 5. Calculate Centers (for Relative Positional Encoding later)
+        # (1, num_polylines, 3)
         temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)
         map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)
 
