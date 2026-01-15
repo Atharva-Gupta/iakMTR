@@ -531,25 +531,53 @@ class WaymoDataset(DatasetTemplate):
 
         num_polylines, num_points, _ = batch_polylines.shape
 
-        batch_polylines[:, :, 0:2] = common_utils.rotate_points_along_z(
-            points=batch_polylines[:, :, 0:2].view(1, -1, 2),
-            angle=-sdc_heading
-        ).view(num_polylines, num_points, 2)
+        num_of_src_polylines = self.dataset_cfg.NUM_OF_SRC_POLYLINES
 
-        batch_polylines[:, :, 3:5] = common_utils.rotate_points_along_z(
-            points=batch_polylines[:, :, 3:5].view(1, -1, 2),
-            angle=-sdc_heading
-        ).view(num_polylines, num_points, 2)
+        if len(batch_polylines) > num_of_src_polylines:
+            # (num_polylines, 2) <- basically the average xy position of each polyline
+            polyline_center = batch_polylines[:, :, 0:2].sum(dim=1) / torch.clamp_min(batch_polylines_mask.sum(dim=1).float()[:, None], min=1.0)
+            center_offset_rot = torch.from_numpy(np.array(center_offset, dtype=np.float32))[None, :].clone()
+            center_offset_rot = common_utils.rotate_points_along_z(
+                points=center_offset_rot.view(1, 1, 2),
+                angle=sdc_heading
+            ).view(1, 2)
 
-        xy_pos_pre = batch_polylines[:, :, 0:2]
+            # center_offset_rot essentially is the vector (30, 0) (based on offset value)
+            # rotated into all of the different center_objects frames.
+            # When we add this to center_objects[:, 0:2], we essentially get a point
+            # 30 meters ahead of the object, in the direction the object is facing.
+            pos_of_map_centers = sdc_xyz[:2].view(1, 2) + center_offset_rot # (1, 2)
+
+            print(pos_of_map_centers.shape, sdc_xyz.shape)
+
+            # we choose the closest polylines to each agent based on this future point (30 meters ahead)
+            dist = (pos_of_map_centers[:, None, :] - polyline_center[None, :, :]).norm(dim=-1)  # (num_center_objects, num_polylines)
+            topk_dist, topk_idxs = dist.topk(k=num_of_src_polylines, dim=-1, largest=False)
+            map_polylines = batch_polylines[topk_idxs]  # (1, num_topk_polylines, num_points_each_polyline, 7)
+            map_polylines_mask = batch_polylines_mask[topk_idxs]  # (1, num_topk_polylines, num_points_each_polyline)
+        else:
+            map_polylines = batch_polylines[None, :, :, :].clone()
+            map_polylines_mask = batch_polylines_mask[None, :, :].clone()
+
+
+        # print("MAP POLYLINES", map_polylines.shape, num_of_src_polylines)
+
+        map_polylines[:, :, :, 0:2] = common_utils.rotate_points_along_z(
+            points=map_polylines[:, :, :, 0:2].view(1, -1, 2),
+            angle=-sdc_heading
+        ).view(1, -1, num_points, 2)
+
+        map_polylines[:, :, :, 3:5] = common_utils.rotate_points_along_z(
+            points=map_polylines[:, :, :, 3:5].view(1, -1, 2),
+            angle=-sdc_heading
+        ).view(1, -1, num_points, 2)
+
+        xy_pos_pre = map_polylines[:, :, :, 0:2]
         xy_pos_pre = torch.roll(xy_pos_pre, shifts=1, dims=-2)
-        xy_pos_pre[:, 0, :] = xy_pos_pre[:, 1, :] # Fix first point
-        batch_polylines = torch.cat((batch_polylines, xy_pos_pre), dim=-1)
+        xy_pos_pre[:, :, 0, :] = xy_pos_pre[:, :, 1, :] # Fix first point
+        map_polylines = torch.cat((map_polylines, xy_pos_pre), dim=-1)
 
-        batch_polylines[batch_polylines_mask == 0] = 0
-
-        map_polylines = batch_polylines.unsqueeze(0)
-        map_polylines_mask = batch_polylines_mask.unsqueeze(0)
+        map_polylines[map_polylines_mask == 0] = 0
 
         # (1, num_polylines, 3)
         temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)
