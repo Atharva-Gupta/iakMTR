@@ -184,12 +184,12 @@ class WaymoDataset(DatasetTemplate):
             sdc_index=sdc_track_index, timestamps=timestamps, obj_trajs_future=obj_trajs_future
         )
 
-        print("comparing cuz confuzzled", center_objects.shape[0], obj_trajs_data.shape[1])
+        # print("comparing cuz confuzzled", center_objects.shape[0], obj_trajs_data.shape[1])
 
         assert obj_trajs_future_state.shape[:2] == obj_trajs_data.shape[:2]
 
-        print("FUTURE", obj_trajs_future_state.shape)
-        print("FUTURE MASK", obj_trajs_future_mask.shape)
+        # print("FUTURE", obj_trajs_future_state.shape)
+        # print("FUTURE MASK", obj_trajs_future_mask.shape)
 
         # generate the labels of track_objects for training
         # obj_trajs_future_state
@@ -197,8 +197,8 @@ class WaymoDataset(DatasetTemplate):
         center_gt_trajs_mask = obj_trajs_future_mask[:, track_index_to_predict, :]  # (1, num_center_objects, num_future_timestamps)
         center_gt_trajs[center_gt_trajs_mask == 0] = 0
 
-        print("GT", center_gt_trajs.shape)
-        print("GTM", center_gt_trajs_mask.shape)
+        # print("GT", center_gt_trajs.shape)
+        # print("GTM", center_gt_trajs_mask.shape)
 
         # filter invalid past trajs
         assert obj_trajs_past.__len__() == obj_trajs_data.shape[1]
@@ -515,7 +515,7 @@ class WaymoDataset(DatasetTemplate):
         """
         polylines = torch.from_numpy(map_infos['all_polylines'].copy())
 
-        self.logger.info(f"----\n POLYLINE SHAPES: {polylines.shape} \n----")
+        # self.logger.info(f"----\n POLYLINE SHAPES: {polylines.shape} \n----")
 
         center_objects = torch.from_numpy(center_objects)
 
@@ -554,6 +554,10 @@ class WaymoDataset(DatasetTemplate):
         # (1, num_polylines, 3)
         temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)
         map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)
+
+        map_polylines[:, :, :, 0:3] -= map_polylines_center[:, :, None, :] # centering
+
+        assert torch.allclose(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2), torch.zeros_like(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2)), atol=1e-3)
 
         return map_polylines.numpy(), map_polylines_mask.numpy(), map_polylines_center.numpy()
 
