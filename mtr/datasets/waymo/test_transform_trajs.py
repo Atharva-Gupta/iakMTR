@@ -1,133 +1,131 @@
 import unittest
-import numpy as np
+import torch
+import math
 import os
 import sys
-import math
-import torch
 
-# Assuming standard path setup
+# 1. Setup Path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
+# 2. Import
 from waymo_dataset_mtr_p import WaymoDataset
 
-class TestTransformTrajs(unittest.TestCase):
+class TestAgentFrames(unittest.TestCase):
 
     def setUp(self):
-        # Standard dimensions
+        # 2 Objects, 5 Timestamps, 7 Attributes
         self.num_objects = 2
         self.num_timestamps = 5
         self.num_attrs = 7  # [x, y, z, dx, dy, heading, vel_x]
-        self.heading_idx = 5
 
-        # Shortcut to the function
-        self.func = WaymoDataset.transform_trajs_to_center_coords
+        self.heading_idx = 5
+        self.func = WaymoDataset.transform_trajs_to_agent_frames
 
     def test_shapes(self):
         """
-        Test 1: Verify output dimensions match input dimensions with extra dim (1, N, T, A).
+        Test 1: Verify output shapes for all 3 return values.
         """
         obj_trajs = torch.zeros((self.num_objects, self.num_timestamps, self.num_attrs))
-        sdc_xyz = torch.tensor([10.0, 10.0, 0.0])
-        sdc_heading = torch.tensor([0.0])
 
-        result = self.func(
-            obj_trajs=obj_trajs,
-            sdc_xyz=sdc_xyz,
-            sdc_heading=sdc_heading,
-            heading_index=self.heading_idx
-        )
+        # Expect 3 return values now
+        ret_trajs, ret_global_pos, ret_headings = self.func(obj_trajs, heading_index=self.heading_idx)
 
-        # Expected shape adds a dimension of size 1 at the start
-        expected_shape = (1, self.num_objects, self.num_timestamps, self.num_attrs)
+        # 1. Trajectories: (1, N, T, A)
+        expected_traj_shape = (1, self.num_objects, self.num_timestamps, self.num_attrs)
+        self.assertEqual(ret_trajs.shape, expected_traj_shape)
 
-        self.assertEqual(result.shape, expected_shape,
-                         f"Expected shape {expected_shape}, got {result.shape}")
+        # 2. Global Positions: (1, N, 1, 3) -> As defined by [:, :, -1, None, 0:3]
+        expected_pos_shape = (1, self.num_objects, 3)
+        self.assertEqual(ret_global_pos.shape, expected_pos_shape)
+
+        # 3. Headings: (1, N)
+        expected_heading_shape = (1, self.num_objects)
+        self.assertEqual(ret_headings.shape, expected_heading_shape)
+
+    def test_returned_globals_are_correct(self):
+        """
+        Test 2: Verify the returned global position/heading match the ORIGINAL
+        world-frame data at the last timestamp (before the function zeroed them out).
+        """
+        # Create data with specific end points
+        obj_trajs = torch.zeros((1, 2, 7))
+        # End point at (10, 10), Heading 90 deg
+        obj_trajs[0, -1, 0:3] = torch.tensor([10.0, 10.0, 5.0])
+        obj_trajs[0, -1, self.heading_idx] = math.pi / 2
+
+        # Run function
+        _, ret_global_pos, ret_headings = self.func(obj_trajs, heading_index=self.heading_idx)
+
+        # Check Positions (should be original 10, 10, 5)
+        expected_pos = torch.tensor([10.0, 10.0, 5.0])
+        torch.testing.assert_close(ret_global_pos[0, 0], expected_pos)
+
+        # Check Heading (should be original pi/2)
+        expected_heading = torch.tensor(math.pi / 2)
+        torch.testing.assert_close(ret_headings[0, 0], expected_heading)
+
+    def test_end_point_is_zero(self):
+        """
+        Test 3: Logic Check. The transformed trajectory should end at (0,0) with 0 heading.
+        """
+        obj_trajs = torch.randn((self.num_objects, self.num_timestamps, self.num_attrs))
+
+        ret_trajs, _, _ = self.func(obj_trajs, heading_index=self.heading_idx)
+
+        # Check that the last timestamp for every object is 0
+        final_pos = ret_trajs[0, :, -1, 0:3]     # x, y, z
+        final_heading = ret_trajs[0, :, -1, self.heading_idx]
+
+        torch.testing.assert_close(final_pos, torch.zeros_like(final_pos), atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(final_heading, torch.zeros_like(final_heading), atol=1e-5, rtol=1e-5)
 
     def test_translation_logic(self):
         """
-        Test 2: Pure Translation.
-        SDC at (10, 10), Heading 0.
-        Object at (15, 15) should become (5, 5).
+        Test 4: Pure Translation (Moving East).
+        T=0: (0,0) -> T=1: (10,0).
+        Relative to T=1, T=0 is at (-10, 0).
         """
-        obj_trajs = torch.zeros((1, 1, 6))
-        obj_trajs[0, 0, :2] = torch.tensor([15.0, 15.0])
+        obj_trajs = torch.zeros((1, 2, 7))
+        obj_trajs[0, 0, :2] = torch.tensor([0.0, 0.0])
+        obj_trajs[0, 1, :2] = torch.tensor([10.0, 0.0])
 
-        sdc_xyz = torch.tensor([10.0, 10.0, 0.0])
-        sdc_heading = torch.tensor([0.0])
+        ret_trajs, _, _ = self.func(obj_trajs, heading_index=self.heading_idx)
 
-        result = self.func(obj_trajs, sdc_xyz, sdc_heading, heading_index=5)
-
-        expected_pos = torch.tensor([5.0, 5.0])
-
-        # Check result[0] (first center index) -> obj 0 -> time 0 -> pos
-        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
+        expected_start = torch.tensor([-10.0, 0.0])
+        torch.testing.assert_close(ret_trajs[0, 0, 0, :2], expected_start, atol=1e-4, rtol=1e-4)
 
     def test_rotation_logic(self):
         """
-        Test 3: Pure Rotation (90 degrees).
-        SDC at (0, 0), Heading pi/2 (North).
-        Object at (1, 0) (East) should become (0, -1) (SDC's Right).
-        Object Heading 0 (East) should become -pi/2 (Relative South).
+        Test 5: Pure Rotation (Moving North).
+        T=0: (0,0) -> T=1: (0,10), Heading North.
+        Relative to North-facing frame at (0,10), (0,0) is 10m *Behind*.
+        Expected T=0: (-10, 0).
         """
-        obj_trajs = torch.zeros((1, 1, 6))
-        obj_trajs[0, 0, :2] = torch.tensor([1.0, 0.0]) # World East
-        obj_trajs[0, 0, 5] = 0.0                       # World East Heading
+        obj_trajs = torch.zeros((1, 2, 7))
+        obj_trajs[0, 0, :2] = torch.tensor([0.0, 0.0])
+        obj_trajs[0, 1, :2] = torch.tensor([0.0, 10.0])
+        obj_trajs[0, 1, self.heading_idx] = math.pi / 2
 
-        sdc_xyz = torch.tensor([0.0, 0.0, 0.0])
-        sdc_heading = torch.tensor([math.pi / 2])      # SDC Facing North
+        ret_trajs, _, _ = self.func(obj_trajs, heading_index=self.heading_idx)
 
-        result = self.func(obj_trajs, sdc_xyz, sdc_heading, heading_index=5)
+        expected_start = torch.tensor([-10.0, 0.0])
+        torch.testing.assert_close(ret_trajs[0, 0, 0, :2], expected_start, atol=1e-4, rtol=1e-4)
 
-        # New Position: (0, -1)
-        expected_pos = torch.tensor([0.0, -1.0])
-        # New Heading: 0 - pi/2 = -pi/2
-        expected_heading = torch.tensor(-math.pi / 2)
-
-        # Access index [0, 0, 0, ...]
-        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
-        torch.testing.assert_close(result[0, 0, 0, 5], expected_heading, rtol=1e-4, atol=1e-4)
-
-    def test_full_transform(self):
+    def test_velocity_rotation(self):
         """
-        Test 4: Translation + Rotation.
-        Object: (11, 10), Heading 0.
-        SDC: (10, 10), Heading pi/2.
-
-        1. Translate: (11,10) - (10,10) = (1, 0)
-        2. Rotate -pi/2: (1, 0) -> (0, -1)
+        Test 6: Velocity Vector Rotation.
+        Moving North (Vy=5) with Heading North.
+        Relative to vehicle, this is Forward velocity (Vx=5).
         """
-        obj_trajs = torch.zeros((1, 1, 6))
-        obj_trajs[0, 0, :2] = torch.tensor([11.0, 10.0])
-        obj_trajs[0, 0, 5] = 0.0
+        obj_trajs = torch.zeros((1, 1, 8))
+        obj_trajs[0, 0, :2] = torch.tensor([0.0, 10.0])
+        obj_trajs[0, 0, self.heading_idx] = math.pi / 2
+        obj_trajs[0, 0, 6:8] = torch.tensor([0.0, 5.0])
 
-        sdc_xyz = torch.tensor([10.0, 10.0, 0.0])
-        sdc_heading = torch.tensor([math.pi / 2])
+        ret_trajs, _, _ = self.func(obj_trajs, heading_index=self.heading_idx, rot_vel_index=[6, 7])
 
-        result = self.func(obj_trajs, sdc_xyz, sdc_heading, heading_index=5)
-
-        expected_pos = torch.tensor([0.0, -1.0])
-
-        # Access index [0, 0, 0, ...]
-        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos, rtol=1e-4, atol=1e-4)
-
-    def test_batch_processing(self):
-        """
-        Test 5: Multiple objects/timestamps behave consistently.
-        """
-        # Create 2 objects with identical initial states
-        obj_trajs = torch.zeros((2, 1, 6))
-        obj_trajs[:, 0, :2] = torch.tensor([15.0, 15.0])
-
-        sdc_xyz = torch.tensor([10.0, 10.0, 0.0])
-        sdc_heading = torch.tensor([0.0])
-
-        result = self.func(obj_trajs, sdc_xyz, sdc_heading, heading_index=5)
-
-        # Both objects should be transformed identically
-        expected_pos = torch.tensor([5.0, 5.0])
-
-        # Access index [0, obj_idx, time, attrs]
-        torch.testing.assert_close(result[0, 0, 0, :2], expected_pos)
-        torch.testing.assert_close(result[0, 1, 0, :2], expected_pos)
+        expected_vel = torch.tensor([5.0, 0.0])
+        torch.testing.assert_close(ret_trajs[0, 0, 0, 6:8], expected_vel, atol=1e-4, rtol=1e-4)
 
 if __name__ == '__main__':
     unittest.main()
