@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 
@@ -143,7 +143,7 @@ class MTRDecoder(nn.Module):
 
         motion_reg_heads = nn.ModuleList([copy.deepcopy(motion_reg_head) for _ in range(num_decoder_layers)])
         motion_cls_heads = nn.ModuleList([copy.deepcopy(motion_cls_head) for _ in range(num_decoder_layers)])
-        motion_vel_heads = None 
+        motion_vel_heads = None
         return motion_reg_heads, motion_cls_heads, motion_vel_heads
 
     def apply_dense_future_prediction(self, obj_feature, obj_mask, obj_pos):
@@ -314,7 +314,7 @@ class MTRDecoder(nn.Module):
                 attention_layer=self.obj_decoder_layers[layer_idx],
                 dynamic_query_center=dynamic_query_center,
                 layer_idx=layer_idx
-            ) 
+            )
 
             # query map feature
             collected_idxs, base_map_idxs = self.apply_dynamic_map_collection(
@@ -337,12 +337,12 @@ class MTRDecoder(nn.Module):
                 query_index_pair=collected_idxs,
                 query_content_pre_mlp=self.map_query_content_mlps[layer_idx],
                 query_embed_pre_mlp=self.map_query_embed_mlps
-            ) 
+            )
 
             query_feature = torch.cat([center_objects_feature, obj_query_feature, map_query_feature], dim=-1)
             query_content = self.query_feature_fusion_layers[layer_idx](
                 query_feature.flatten(start_dim=0, end_dim=1)
-            ).view(num_query, num_center_objects, -1) 
+            ).view(num_query, num_center_objects, -1)
 
             # motion prediction
             query_content_t = query_content.permute(1, 0, 2).contiguous().view(num_center_objects * num_query, -1)
@@ -527,6 +527,30 @@ class MTRDecoder(nn.Module):
         obj_feature, pred_dense_future_trajs = self.apply_dense_future_prediction(
             obj_feature=obj_feature, obj_mask=obj_mask, obj_pos=obj_pos
         )
+
+        if center_objects_feature.shape[0] != obj_feature.shape[0]:
+            batch_idxs = batch_dict.get('center_objects_batch_idx', None)
+            if batch_idxs is None:
+                batch_sample_count = batch_dict.get('batch_sample_count', None)
+                if batch_sample_count is not None:
+                    if isinstance(batch_sample_count, list):
+                        batch_sample_count = torch.tensor(batch_sample_count).to(obj_feature.device)
+                    batch_idxs = torch.repeat_interleave(torch.arange(len(batch_sample_count)).to(obj_feature.device), batch_sample_count)
+
+            if batch_idxs is not None:
+                obj_feature = obj_feature[batch_idxs]
+                obj_mask = obj_mask[batch_idxs]
+                obj_pos = obj_pos[batch_idxs]
+                map_feature = map_feature[batch_idxs]
+                map_mask = map_mask[batch_idxs]
+                map_pos = map_pos[batch_idxs]
+            else:
+                raise RuntimeError(
+                    f"Batch size mismatch: center_objects_feature={center_objects_feature.shape[0]}, "
+                    f"obj_feature={obj_feature.shape[0]}. "
+                    "Please provide 'center_objects_batch_idx' or 'batch_sample_count' in batch_dict to map agents to scenes."
+                )
+
         # decoder layers
         pred_list = self.apply_transformer_decoder(
             center_objects_feature=center_objects_feature,

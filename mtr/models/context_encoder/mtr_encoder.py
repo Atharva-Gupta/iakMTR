@@ -214,8 +214,14 @@ class MTREncoder(nn.Module):
         map_polylines_feature = global_token_feature[:, num_objects:]
         assert map_polylines_feature.shape[1] == num_polylines
 
-        # organize return features
-        center_objects_feature = obj_polylines_feature[torch.arange(batch_size), target_agent_indices]
+        batch_sample_count = batch_dict['batch_sample_count']
+        src_batch_idxs_list = []
+        for bs_idx, count in enumerate(batch_sample_count):
+            src_batch_idxs_list.append(
+                torch.full((count,), bs_idx, dtype=torch.long, device=obj_polylines_feature.device)
+            )
+        src_batch_idxs = torch.cat(src_batch_idxs_list, dim=0)
+        center_objects_feature = obj_polylines_feature[src_batch_idxs, target_agent_indices]
 
         batch_dict['center_objects_feature'] = center_objects_feature
         batch_dict['obj_feature'] = obj_polylines_feature

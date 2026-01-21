@@ -153,7 +153,7 @@ class WaymoDataset(DatasetTemplate):
             'center_gt_trajs_mask': center_gt_trajs_mask,
             'center_gt_final_valid_idx': center_gt_final_valid_idx,
             'center_gt_trajs_src': obj_trajs_full[track_index_to_predict],
-            'batch_sample_count': len(track_index_to_predict_new)
+            # 'batch_sample_count': len(track_index_to_predict_new)
         }
 
         if not self.dataset_cfg.get('WITHOUT_HDMAP', False):
