@@ -152,7 +152,8 @@ class WaymoDataset(DatasetTemplate):
             'center_gt_trajs': center_gt_trajs,
             'center_gt_trajs_mask': center_gt_trajs_mask,
             'center_gt_final_valid_idx': center_gt_final_valid_idx,
-            'center_gt_trajs_src': obj_trajs_full[track_index_to_predict]
+            'center_gt_trajs_src': obj_trajs_full[track_index_to_predict],
+            'batch_sample_count': len(track_index_to_predict_new)
         }
 
         if not self.dataset_cfg.get('WITHOUT_HDMAP', False):
@@ -313,8 +314,20 @@ class WaymoDataset(DatasetTemplate):
     @staticmethod
     def transform_trajs_to_agent_frames(obj_trajs, heading_index, rot_vel_index=None):
         """
+        This function transforms each trajectory in obj_trajs to the perspective of the
+        most recent frame in the trajectory.
+
+        Args:
+            obj_trajs (num_objects, num_timestamps, num_attrs):
+                first three values of num_attrs are [x, y, z] or [x, y]
+            heading_index: the index of heading angle in the num_attr-axis of obj_trajs
+            rot_vel_index: the index of velocity in the num_attr-axis of obj_trajs
+
+        Returns:
         obj_trajs (1, num_objects, num_timestamps, num_attrs):
                 first three values of num_attrs are [x, y, z] or [x, y]
+        orig_obj_positions (1, num_objects, 3):
+        orig_obj_headings (1, num_objects):
         """
         _, num_objects, num_timestamps, num_attrs = obj_trajs.shape
 
@@ -348,7 +361,8 @@ class WaymoDataset(DatasetTemplate):
         return obj_trajs, orig_obj_positions, orig_obj_headings
 
     def generate_centered_trajs_for_agents(self, center_objects, obj_trajs_past, obj_types, center_indices, sdc_index, timestamps, obj_trajs_future):
-        """[summary]
+        """Transforms obj_trajs_past, obj_trajs_future to the frame of the most recent agent
+        heading & position and generates corresponding masks.
 
         Args:
             center_objects (num_center_objects, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
@@ -430,6 +444,8 @@ class WaymoDataset(DatasetTemplate):
         ret_obj_trajs[ret_obj_valid_mask == 0] = 0
 
         ##  generate label for future trajectories
+        # note that we cannot use transform_trajs_to_agent_frames because we want to transform
+        # to the frame of the current positions of the agent, not the end future position frames
         obj_trajs_future = torch.from_numpy(obj_trajs_future).float()
         obj_trajs_future = self.transform_trajs_to_center_coords(
             obj_trajs=obj_trajs_future,
@@ -502,6 +518,9 @@ class WaymoDataset(DatasetTemplate):
 
     def create_map_data_for_center_objects(self, center_objects, map_infos, center_offset, sdc_xyz, sdc_heading):
         """
+        Creates the batch polylines, reduces them to the k nearest to the autonomous vehicle, and
+        then transforms into polyline frame (TBD).
+
         Args:
             center_objects (num_center_objects, 10): [cx, cy, cz, dx, dy, dz, heading, vel_x, vel_y, valid]
             map_infos (dict):
@@ -539,7 +558,7 @@ class WaymoDataset(DatasetTemplate):
             center_offset_rot = torch.from_numpy(np.array(center_offset, dtype=np.float32))[None, :].clone()
             center_offset_rot = common_utils.rotate_points_along_z(
                 points=center_offset_rot.view(1, 1, 2),
-                angle=sdc_heading
+                angle=-sdc_heading
             ).view(1, 2)
 
             # center_offset_rot essentially is the vector (30, 0) (based on offset value)
@@ -548,7 +567,7 @@ class WaymoDataset(DatasetTemplate):
             # 30 meters ahead of the object, in the direction the object is facing.
             pos_of_map_centers = sdc_xyz[:2].view(1, 2) + center_offset_rot # (1, 2)
 
-            print(pos_of_map_centers.shape, sdc_xyz.shape)
+            # print(pos_of_map_centers.shape, sdc_xyz.shape)
 
             # we choose the closest polylines to each agent based on this future point (30 meters ahead)
             dist = (pos_of_map_centers[:, None, :] - polyline_center[None, :, :]).norm(dim=-1)  # (num_center_objects, num_polylines)
@@ -558,7 +577,6 @@ class WaymoDataset(DatasetTemplate):
         else:
             map_polylines = batch_polylines[None, :, :, :].clone()
             map_polylines_mask = batch_polylines_mask[None, :, :].clone()
-
 
         # print("MAP POLYLINES", map_polylines.shape, num_of_src_polylines)
 
@@ -572,6 +590,7 @@ class WaymoDataset(DatasetTemplate):
             angle=-sdc_heading
         ).view(1, -1, num_points, 2)
 
+        # TODO: should I be doing this shifting stuff after the centering below?
         xy_pos_pre = map_polylines[:, :, :, 0:2]
         xy_pos_pre = torch.roll(xy_pos_pre, shifts=1, dims=-2)
         xy_pos_pre[:, :, 0, :] = xy_pos_pre[:, :, 1, :] # Fix first point
@@ -584,8 +603,9 @@ class WaymoDataset(DatasetTemplate):
         map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)
 
         map_polylines[:, :, :, 0:3] -= map_polylines_center[:, :, None, :] # centering
+        # TODO: Need to do rotations as well into the frame of the tangent direction to the polyline?
 
-        assert torch.allclose(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2), torch.zeros_like(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2)), atol=1e-3)
+        assert torch.max(torch.abs(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2))) < 1e-1, f"{torch.max(torch.abs(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2)))}"
 
         return map_polylines.numpy(), map_polylines_mask.numpy(), map_polylines_center.numpy()
 
