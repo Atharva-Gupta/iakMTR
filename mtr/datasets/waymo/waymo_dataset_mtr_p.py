@@ -125,9 +125,10 @@ class WaymoDataset(DatasetTemplate):
             obj_types=obj_types, scene_id=scene_id
         )
 
-        (obj_trajs_data, obj_trajs_mask, obj_trajs_pos, obj_trajs_last_pos, obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs,
-            center_gt_trajs_mask, center_gt_final_valid_idx,
-            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, sdc_xyz, sdc_heading) = self.create_agent_data_for_center_objects(
+        (obj_trajs_data, obj_trajs_mask, obj_trajs_pos, obj_trajs_last_pos, obj_trajs_future_state,
+         obj_trajs_future_mask, center_gt_trajs, center_gt_trajs_mask, center_gt_final_valid_idx,
+         track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, obj_current_positions_sdc,
+         obj_current_headings_sdc, sdc_xyz, sdc_heading) = self.create_agent_data_for_center_objects(
             center_objects=center_objects, obj_trajs_past=obj_trajs_past, obj_trajs_future=obj_trajs_future,
             track_index_to_predict=track_index_to_predict, sdc_track_index=sdc_track_index,
             timestamps=timestamps, obj_types=obj_types, obj_ids=obj_ids
@@ -153,6 +154,13 @@ class WaymoDataset(DatasetTemplate):
             'center_gt_trajs_mask': center_gt_trajs_mask,
             'center_gt_final_valid_idx': center_gt_final_valid_idx,
             'center_gt_trajs_src': obj_trajs_full[track_index_to_predict],
+
+            'obj_current_positions_sdc': obj_current_positions_sdc,
+            'obj_current_headings_sdc': obj_current_headings_sdc,
+            'sdc_xyz': sdc_xyz,
+            'sdc_heading': sdc_heading,
+            'sdc_track_index': sdc_track_index_new,
+
             # 'batch_sample_count': len(track_index_to_predict_new)
         }
 
@@ -238,7 +246,8 @@ class WaymoDataset(DatasetTemplate):
 
         return (obj_trajs_data, obj_trajs_mask > 0, obj_trajs_pos, obj_trajs_last_pos,
             obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs[0], center_gt_trajs_mask[0], center_gt_final_valid_idx,
-            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, sdc_xyz, sdc_heading)
+            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, obj_current_positions_sdc, obj_current_headings_sdc,
+            sdc_xyz, sdc_heading)
 
     def get_interested_agents(self, track_index_to_predict, obj_trajs_full, current_time_index, obj_types, scene_id):
         """
@@ -381,15 +390,16 @@ class WaymoDataset(DatasetTemplate):
         """
         assert obj_trajs_past.shape[-1] == 10
         assert center_objects.shape[-1] == 10
-        num_center_objects = center_objects.shape[0]
+
         num_objects, num_timestamps, box_dim = obj_trajs_past.shape
+
         # transform to cpu torch tensor
         center_objects = torch.from_numpy(center_objects).float()
         obj_trajs_past = torch.from_numpy(obj_trajs_past).float()
         timestamps = torch.from_numpy(timestamps)
 
-        sdc_xyz = obj_trajs_past[sdc_index, -1, 0:3]
-        sdc_heading = obj_trajs_past[sdc_index, -1, 6]
+        sdc_xyz = obj_trajs_past[sdc_index, -1, 0:3].clone()
+        sdc_heading = obj_trajs_past[sdc_index, -1, 6].clone()
 
         # transform coordinates to the autonomous vehicle frame
         # (1, num_objects, num_timestamps, 10)
