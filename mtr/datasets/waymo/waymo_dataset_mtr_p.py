@@ -348,8 +348,8 @@ class WaymoDataset(DatasetTemplate):
 
         obj_trajs[:, :, :, 0:3] -= orig_obj_positions[:, :, None, :] # centering
         obj_trajs[:, :, :, 0:2] = common_utils.rotate_points_along_z(
-            points=obj_trajs[:, :, :, 0:2].view(num_objects, -1, 2), # (num_objects * num_timestamps, 2)
-            angle=-orig_obj_headings
+            points=obj_trajs[:, :, :, 0:2].view(num_objects, -1, 2), # (num_objects, num_timestamps, 2)
+            angle=-orig_obj_headings.view(-1)
         ).view(1, num_objects, num_timestamps, 2)
 
         obj_trajs[:, :, :, heading_index] -= orig_obj_headings[:, :, None]
@@ -411,14 +411,38 @@ class WaymoDataset(DatasetTemplate):
             rot_vel_index=[7, 8],
         )
 
-        # print(type(obj_trajs))
-        # print(obj_trajs.shape)
+        obj_trajs_temp = obj_trajs.clone()
+        print("temp", obj_trajs_temp.shape)
 
         obj_trajs, obj_current_positions_sdc, obj_current_headings_sdc = self.transform_trajs_to_agent_frames(
             obj_trajs=obj_trajs,
             heading_index=6,
             rot_vel_index=[7, 8]
         )
+
+        reverse_transformed = obj_trajs[:, :, :, :3]
+        print(obj_current_positions_sdc.shape)
+
+        print(reverse_transformed.view(num_objects, num_timestamps, 3).shape, obj_current_headings_sdc[0, :].shape)
+        reverse_transformed = common_utils.rotate_points_along_z(
+            points = reverse_transformed.view(num_objects, num_timestamps, 3),
+            angle = obj_current_headings_sdc[0, :]
+        ).view(1, num_objects, num_timestamps, 3)
+        reverse_transformed = reverse_transformed + obj_current_positions_sdc[0, :, None, :]
+
+        assert obj_trajs_temp[:, :, :, :3].shape == reverse_transformed.shape
+        print(torch.max(torch.abs(obj_trajs_temp[:, :, :, :3] - reverse_transformed)))
+        assert torch.allclose(obj_trajs_temp[:, :, :, :3], reverse_transformed, atol=1e-2)
+
+        reverse_transformed = common_utils.rotate_points_along_z(
+            points=reverse_transformed.view(num_objects, -1, 3), # (1, num_objects * num_timestamps, 3)
+            angle=sdc_heading # (1,)
+        ).view(1, num_objects, num_timestamps, 3)
+        reverse_transformed = reverse_transformed + sdc_xyz[None, None, None, :]
+
+        assert obj_trajs_past[None, :, :, :3].shape == reverse_transformed.shape
+        print(torch.max(torch.abs(obj_trajs_past[None, :, :, :3] - reverse_transformed)))
+        assert torch.allclose(obj_trajs_past[None, :, :, :3], reverse_transformed, atol=1e-2)
 
         ## generate the attributes for each object
         object_onehot_mask = torch.zeros((1, num_objects, num_timestamps, 5))
