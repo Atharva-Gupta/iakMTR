@@ -1,6 +1,6 @@
 # Motion Transformer (MTR): https://arxiv.org/abs/2209.13508
 # Published at NeurIPS 2022
-# Written by Shaoshuai Shi 
+# Written by Shaoshuai Shi
 # All Rights Reserved
 
 
@@ -75,9 +75,16 @@ class DatasetTemplate(torch_data.Dataset):
                 input_dict[key] = common_utils.merge_batch_by_padding_2nd_dim(val_list)
             elif key in ['scenario_id', 'obj_types', 'obj_ids', 'center_objects_type', 'center_objects_id']:
                 input_dict[key] = np.concatenate(val_list, axis=0)
+            elif key in ['sdc_heading', 'sdc_track_index']:
+                input_dict[key] = np.array([x for x in val_list])
             else:
-                val_list = [torch.from_numpy(x) for x in val_list]
-                input_dict[key] = torch.cat(val_list, dim=0)
+                val_list = [torch.from_numpy(x) if isinstance(x, np.ndarray) else x for x in val_list]
+                try:
+                    input_dict[key] = torch.cat(val_list, dim=0)
+                except Exception as e:
+                    print("BAD KEY", key)
+                    print([thing.shape for thing in val_list])
+                    assert False
 
         batch_sample_count = [len(x['track_index_to_predict']) for x in batch_list]
         batch_dict = {'batch_size': batch_size, 'input_dict': input_dict, 'batch_sample_count': batch_sample_count}

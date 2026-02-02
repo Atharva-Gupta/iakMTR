@@ -19,7 +19,7 @@ __all__ = {
 }
 
 
-def build_dataloader(dataset_cfg, batch_size, dist, workers=4,
+def build_dataloader(dataset_cfg, batch_size, dist, workers=1,
                      logger=None, training=True, merge_all_iters_to_one_epoch=False, total_epochs=0, add_worker_init_fn=False):
 
     def worker_init_fn_(worker_id):

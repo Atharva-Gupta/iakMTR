@@ -246,7 +246,7 @@ class WaymoDataset(DatasetTemplate):
 
         return (obj_trajs_data, obj_trajs_mask > 0, obj_trajs_pos, obj_trajs_last_pos,
             obj_trajs_future_state, obj_trajs_future_mask, center_gt_trajs[0], center_gt_trajs_mask[0], center_gt_final_valid_idx,
-            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, obj_current_positions_sdc, obj_current_headings_sdc,
+            track_index_to_predict_new, sdc_track_index_new, obj_types, obj_ids, obj_current_positions_sdc[0], obj_current_headings_sdc[0],
             sdc_xyz, sdc_heading)
 
     def get_interested_agents(self, track_index_to_predict, obj_trajs_full, current_time_index, obj_types, scene_id):
@@ -580,6 +580,8 @@ class WaymoDataset(DatasetTemplate):
             num_points_each_polyline=self.dataset_cfg.get('NUM_POINTS_EACH_POLYLINE', 20),
         )
 
+        batch_orig_saved = batch_polylines.clone()
+
         batch_polylines[:, :, 0:3] -= sdc_xyz.float()[None, None, :]
 
         num_polylines, num_points, _ = batch_polylines.shape
@@ -609,6 +611,7 @@ class WaymoDataset(DatasetTemplate):
             map_polylines = batch_polylines[topk_idxs]  # (1, num_topk_polylines, num_points_each_polyline, 7)
             map_polylines_mask = batch_polylines_mask[topk_idxs]  # (1, num_topk_polylines, num_points_each_polyline)
         else:
+            topk_idxs = torch.arange(batch_polylines.shape[0])
             map_polylines = batch_polylines[None, :, :, :].clone()
             map_polylines_mask = batch_polylines_mask[None, :, :].clone()
 
@@ -624,7 +627,14 @@ class WaymoDataset(DatasetTemplate):
             angle=-sdc_heading
         ).view(1, -1, num_points, 2)
 
-        # TODO: should I be doing this shifting stuff after the centering below?
+        # (1, num_polylines, 3)
+        temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)
+        map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)
+
+        map_polylines[:, :, :, 0:3] -= map_polylines_center[:, :, None, :] # centering
+        # TODO: Need to do rotations as well into the frame of the tangent direction to the polyline?
+
+
         xy_pos_pre = map_polylines[:, :, :, 0:2]
         xy_pos_pre = torch.roll(xy_pos_pre, shifts=1, dims=-2)
         xy_pos_pre[:, :, 0, :] = xy_pos_pre[:, :, 1, :] # Fix first point
@@ -632,12 +642,7 @@ class WaymoDataset(DatasetTemplate):
 
         map_polylines[map_polylines_mask == 0] = 0
 
-        # (1, num_polylines, 3)
-        temp_sum = (map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float()).sum(dim=-2)
-        map_polylines_center = temp_sum / torch.clamp_min(map_polylines_mask.sum(dim=-1).float()[:, :, None], min=1.0)
 
-        map_polylines[:, :, :, 0:3] -= map_polylines_center[:, :, None, :] # centering
-        # TODO: Need to do rotations as well into the frame of the tangent direction to the polyline?
 
         assert torch.max(torch.abs(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2))) < 1e-1, f"{torch.max(torch.abs(torch.sum(map_polylines[:, :, :, 0:3] * map_polylines_mask[:, :, :, None].float(), dim=-2)))}"
 

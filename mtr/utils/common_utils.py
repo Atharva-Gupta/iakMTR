@@ -35,7 +35,7 @@ def rotate_points_along_z(points, angle):
 
     cosa = torch.cos(angle)
     sina = torch.sin(angle)
-    zeros = angle.new_zeros(points.shape[0])
+    zeros = angle.new_zeros(angle.shape[0])
     if points.shape[-1] == 2:
         rot_matrix = torch.stack((
             cosa,  sina,
@@ -43,7 +43,7 @@ def rotate_points_along_z(points, angle):
         ), dim=1).view(-1, 2, 2).float()
         points_rot = torch.matmul(points, rot_matrix)
     else:
-        ones = angle.new_ones(points.shape[0])
+        ones = angle.new_ones(angle.shape[0])
         rot_matrix = torch.stack((
             cosa,  sina, zeros,
             -sina, cosa, zeros,
